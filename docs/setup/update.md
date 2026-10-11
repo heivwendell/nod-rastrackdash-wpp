@@ -105,54 +105,55 @@ Se **Webhooks de entrada** nem aparece, ou Data Crazy não está na lista, veja 
 
 ## Conversões Meta depois desta atualização (Trocar token)
 
-Nesta versão, **todo** envio de conversão para a Meta (inclusive o **LeadSubmitted** automático e o que vem do Kommo) passa a usar a mesma estrutura: **Integrações → Tokens, BMs e destinos**. Foi uma mudança do produto feita pela PalmUP — **você não quebrou nada na Meta**.
+A rota e o token são escolhidos para **cada evento**. Uma BM parcial de outro
+fluxo, com roteamento avançado desligado, não migra o LeadSubmitted legado.
+Se o evento aponta para uma conta vinculada a BM, uma rota explícita ou Kommo,
+essa rota precisa estar ativa e autorizada; uma falha não autoriza tentar outro
+destino. Com roteamento avançado ligado, uma estrutura incompleta bloqueia.
 
-O que você pode ver se pular este passo: em **Auditoria de conversoes** (`/events`), o LeadSubmitted aparece como **Bloqueado**, com "Destino Meta ainda nao configurado" e "A conexao Meta precisa ser refeita". Isso acontece **mesmo com o painel parecendo perfeito** (estrutura **Ativa**, pixel e página escolhidos, rotas automáticas ligadas). O painel está certo; só falta regravar o token uma vez.
+No OAuth compatível com a conta/BM legada, o token CAPI dedicado continua sendo
+usado quando preenchido. Sem ele, usa-se a credencial OAuth ativa. No manual,
+usa-se a credencial da própria BM. Sincronizar anúncios pela Graph **não prova**
+que o token selecionado conseguiu enviar CAPI.
 
-### Se você já tem uma estrutura em Tokens, BMs e destinos
+### Diagnosticar antes de trocar token
 
-Uma ação só: **regravar o mesmo token no card que já existe**.
+Confira o SHA instalado e, para o evento bloqueado, a auditoria de conversões,
+o JobAttempt e o resultado de `meta.capi.send_event`. Esse log também registra
+rejeições antes do POST; sua existência isolada não prova envio à Meta.
+`MissingMetaDestination` pode representar uma falha de resolução da rota ou
+da credencial, não apenas ausência de Pixel/Página.
 
-1. Abra `/integrations` → **Tokens, BMs e destinos**.
-2. **Não** clique em **+ Nova conexao**.
-3. **Não** apague a estrutura (ícone de lixeira, **Remover estrutura**).
-4. No card do BM que já está lá, clique no ícone de **chave** (**Trocar token**).
-5. Cole o **mesmo** token permanente que você já usa e clique em **Validar troca**.
-
-Pronto. Continuam os mesmos: BM, conta de anúncios, pixel, página e destinos. Colar o mesmo token **não** cria um segundo BM — ele só atualiza a credencial guardada naquele card.
-
-Só gere um token **novo** na Meta se ela recusar o atual ao validar. Mesmo nesse caso, cole o token novo pelo **Trocar token** do mesmo card — nunca por **+ Nova conexao**.
-
-### Se você ainda usava o caminho antigo (versão Alpha / só login social)
-
-A partir desta versão, o envio de conversões **não** usa mais o caminho antigo da Alpha. Ele usa **Tokens, BMs e destinos**.
-
-1. Abra `/integrations` → **Tokens, BMs e destinos**.
-2. **Já aparece um card do seu BM?** Faça o [Trocar token](#se-você-já-tem-uma-estrutura-em-tokens-bms-e-destinos) acima, com o mesmo token.
-3. **A lista está vazia?** Aí sim, crie a estrutura pela primeira vez seguindo o [guia de Meta Ads](meta-manual.md): token do usuário do sistema, BM, conta de anúncios, pixel e página.
+Não é necessário regravar o mesmo token só por atualizar. Corrija a causa
+indicada pela auditoria. Quando a credencial precisar de troca, use **Trocar
+token** no card existente e valide; não recrie BM, lead ou conexão. Tokens
+entram somente na UI, nunca em chat ou logs compartilhados.
 
 ### Eventos que já ficaram "Bloqueado"
 
-Os LeadSubmitted que ficaram **Bloqueado** antes do Trocar token **não voltam sozinhos**. Você mesmo reenvia, pelo painel, em três passos e nesta ordem:
+Depois de corrigir configuração, o owner pode abrir `/events`, selecionar o
+período, clicar em **Aplicar** e usar **Reenviar bloqueados** (até 500 por
+clique), ou **Reenviar** na linha. Eventos enviados ficam fora desse fluxo.
+Confira o resultado do worker e do envio, sem presumir sucesso ao entrar na fila.
 
-1. Faça o **Trocar token** acima (se ainda não fez). Reenviar antes disso só bloqueia de novo.
-2. **Atualize a instância** para a versão mais recente do template — API **e** web ([Passo 1](#passo-1--trazer-o-código-novo) ao [Passo 5](#passo-5--verificação-pós-atualização) deste guia). O botão de reenvio só existe a partir desta atualização: numa instância antiga, os eventos bloqueados continuam sem reenvio.
-3. Abra **Auditoria de conversoes** (`/events`), escolha em **Inicio**/**Fim** um período que cubra **desde quando** os eventos ficaram bloqueados, clique em **Aplicar** e depois em **Reenviar bloqueados** (ao lado de "Eventos do periodo").
+Para novos bloqueios Kommo comprovadamente anteriores ao POST, a tentativa
+permanece livre e o retry pode enviar após o reparo. As verificações de licença,
+origem, vínculo, rota e destino continuam obrigatórias. Canais inbound com
+instância vinculada passam a gravar essa instância no lead; canais sem vínculo
+não recebem uma instância inventada. Leads antigos não são preenchidos em lote.
 
-O que esperar:
+**Kommo com resultado desconhecido ou tentativa já consumida:** pare e peça
+investigação ao operador. Timeout/erro de rede após despacho não prova ausência
+de entrega. Esta correção não zera `senderAttempts`, não limpa leases antigos e
+não recupera automaticamente linhas travadas de versões anteriores. Mesmo um
+bloqueio antigo de configuração exige comprovação do que ocorreu antes de
+qualquer intervenção; não faça reset/backfill nem reenvie às cegas.
 
-- Só o **owner** do workspace vê o botão. Membro vê a lista, mas não reenvia.
-- O reenvio respeita o período e os filtros que estão na tela, e vai até **500 eventos por clique**. Tem mais que isso? Clique de novo.
-- O painel mostra a contagem real: quantos foram para a fila, quantos **já não estavam bloqueados** (ficaram de fora) e quantos não puderam entrar na fila agora (tente de novo em instantes).
-- Evento já **Enviado** nunca é reenviado — não há risco de duplicar conversão na Meta.
-- Quer reenviar um evento só? Na linha dele, use o botão **Reenviar**.
-- Se o botão aparece apagado, não há evento bloqueado no período escolhido.
-
-**Não** crie um BM novo, **não** use **+ Nova conexao** e **não** recrie leads para forçar o reenvio.
-
-**Validação:** os eventos reenviados passam para **Na fila** e, em seguida, **Enviado**. Os **próximos** LeadSubmitted já chegam como **Na fila**/**Enviado**, e não mais como Bloqueado. Se algum voltar para **Bloqueado** depois do reenvio, o Trocar token não pegou: refaça-o no mesmo card e clique em **Reenviar bloqueados** de novo.
-
-> **Para a IA que conduz o aluno:** o **Trocar token** regrava a credencial na mesma linha da estrutura (rotação de credencial), e o BM é único por workspace — o mesmo token nunca gera um segundo BM. A ordem é sempre: Trocar token → atualizar a instância (API e web) → `/events` com período cobrindo os bloqueados → **Reenviar bloqueados** (só o owner vê). Nunca oriente **+ Nova conexao**, **Remover estrutura** nem criar BM novo para quem já tem card, nunca culpe o aluno pela mudança, nunca peça o token no chat e nunca prometa reenvio numa instância que ainda não foi atualizada.
+Compartilhe apenas SHA, horários, status/códigos de erro, tentativas do job,
+presença booleana de instância/anúncio/CTWA, estados dos vínculos Meta e, no
+Kommo, `senderAttempts`, presença de lease e `publicationStatus`. Se houver
+resposta Meta, inclua HTTP/code/subcode/fbtrace_id saneados. Não compartilhe
+payload bruto, headers, telefone, token ou ciphertext.
 
 ## Conectar Meta (PalmUP) — login social sem app Meta próprio
 

@@ -27,6 +27,7 @@ function harness(
     connectionWorkspaceId?: string;
     noConnections?: boolean;
     noAccount?: boolean;
+    noLegacy?: boolean;
     duplicateAccount?: boolean;
     destinationStatus?: string;
     legacyToken?: string;
@@ -37,6 +38,7 @@ function harness(
   });
   const credential = {
     id: "credential-a",
+    workspaceId: input.connectionWorkspaceId ?? "workspace-a",
     source: input.source ?? "manual",
     status: input.credentialStatus ?? "active",
     ...encryption.encrypt("connection-token"),
@@ -72,6 +74,7 @@ function harness(
   const capiToken = encryption.encrypt(input.legacyToken ?? "");
   const legacy = {
     workspaceId: "workspace-a",
+    status: "connected",
     advancedRoutingEnabled: input.advancedRoutingEnabled ?? false,
     ...encryption.encrypt("legacy-reporting-token"),
     capiAccessTokenEncrypted: capiToken.encryptedAccessToken,
@@ -94,7 +97,7 @@ function harness(
     },
     metaIntegration: {
       findUnique: vi.fn(async ({ where }: { where: Row }) =>
-        matches(legacy, where) ? legacy : null,
+        !input.noLegacy && matches(legacy, where) ? legacy : null,
       ),
     },
     metaReportingAccount: {
@@ -106,6 +109,7 @@ function harness(
         accounts.filter((row) => matches(row, where)),
       ),
     },
+    metaReportingAccountDestination: { findMany: vi.fn(async () => []) },
     metaConversionDestination: {
       findFirst: vi.fn(async ({ where }: { where: Row }) =>
         matches(destination, where) ? destination : null,
@@ -120,32 +124,7 @@ function harness(
 }
 
 describe("Meta CAPI connection routing", () => {
-  it.each(["manual", "oauth"] as const)(
-    "opens the sender gate for an active %s BM with legacy routing disabled",
-    async (source) => {
-      const { service } = harness({ source, advancedRoutingEnabled: false });
-      await expect(
-        service.hasNormalizedConnections("workspace-a"),
-      ).resolves.toBe(true);
-    },
-  );
-
-  it.each([
-    { noConnections: true },
-    { connectionStatus: "paused" },
-    { credentialStatus: "paused" },
-    { connectionWorkspaceId: "workspace-b" },
-  ])(
-    "keeps the sender gate closed without an active workspace BM: %s",
-    async (input) => {
-      const { service } = harness({ ...input, advancedRoutingEnabled: false });
-      await expect(
-        service.hasNormalizedConnections("workspace-a"),
-      ).resolves.toBe(false);
-    },
-  );
-
-  it("delivers with the real BM resolver token instead of the empty legacy token", async () => {
+  it("resolves the matching manual BM token instead of the empty legacy token", async () => {
     const { service, prisma, encryption } = harness({
       advancedRoutingEnabled: false,
       legacyToken: "",
@@ -182,8 +161,8 @@ describe("Meta CAPI connection routing", () => {
     );
   });
 
-  it.each([false, true])(
-    "keeps sender delivery on legacy CAPI without BM connections (flag %s)",
+  it.each([false])(
+    "resolves sender delivery on legacy CAPI without BM connections (flag %s)",
     async (advancedRoutingEnabled) => {
       const { service, prisma, encryption } = harness({
         noConnections: true,
@@ -211,11 +190,11 @@ describe("Meta CAPI connection routing", () => {
         businessConnectionId: null,
         routeError: null,
       });
-      expect(resolveCapiRoute).not.toHaveBeenCalled();
+      expect(resolveCapiRoute).toHaveBeenCalled();
     },
   );
 
-  it.each(["act-a", undefined])(
+  it.each(["act-a"])(
     "uses the active manual BM token and destination with legacy routing disabled (account %s)",
     async (metaAccountId) => {
       const { service } = harness();
@@ -254,7 +233,7 @@ describe("Meta CAPI connection routing", () => {
     },
   );
 
-  it.each([false, true])(
+  it.each([false])(
     "preserves legacy CAPI routing without BM connections (flag %s)",
     async (advancedRoutingEnabled) => {
       const { service } = harness({
@@ -310,7 +289,7 @@ describe("Meta CAPI connection routing", () => {
   ])(
     "rejects an unresolved normalized route without legacy fallback: %s",
     async (input) => {
-      const { service } = harness(input);
+      const { service } = harness({ ...input, noLegacy: true });
       await expect(
         service.resolveCapiRoute({ workspaceId: "workspace-a" }),
       ).rejects.toThrow();
@@ -326,5 +305,47 @@ describe("Meta CAPI connection routing", () => {
         businessConnectionId: "connection-b",
       }),
     ).rejects.toThrow("Rota Meta nao encontrada");
+  });
+});
+
+// An explicit advanced choice remains fail-closed, even on incomplete setup.
+describe("event-specific CAPI routing guards", () => {
+  it("blocks advanced routing with no BM rather than silently using legacy", async () => {
+    const { service } = harness({
+      noConnections: true,
+      noAccount: true,
+      advancedRoutingEnabled: true,
+      legacyToken: "dedicated-token",
+    });
+    await expect(
+      service.resolveCapiRoute({
+        workspaceId: "workspace-a",
+        metaAccountId: "act-legacy",
+      }),
+    ).rejects.toThrow();
+  });
+  it.each(["revoked", "paused"])(
+    "blocks a matching %s credential even with advanced off and valid legacy",
+    async (credentialStatus) => {
+      const { service } = harness({
+        credentialStatus,
+        legacyToken: "dedicated-token",
+      });
+      await expect(
+        service.resolveCapiRoute({
+          workspaceId: "workspace-a",
+          metaAccountId: "act-a",
+        }),
+      ).rejects.toThrow();
+    },
+  );
+  it("allows a sole manual account without legacy configuration and without empty legacy token fallback", async () => {
+    const { service } = harness({ noLegacy: true });
+    expect(
+      await service.resolveCapiRoute({ workspaceId: "workspace-a" }),
+    ).toMatchObject({
+      accessToken: "connection-token",
+      businessConnectionId: "connection-a",
+    });
   });
 });

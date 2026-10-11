@@ -37,6 +37,7 @@ import {
 } from "../integrations/meta/meta-connection-resolver.service";
 import {
   MetaCapiAdapter,
+  preflightMetaCapiEvent,
   type MetaCapiSendEventErrorCode,
 } from "./meta-capi.adapter";
 import { LicenseClientService } from "../licensing-client/license-client.service";
@@ -863,15 +864,6 @@ export class ConversionEventsService {
         )))
     )
       resolvedDestination.routeError = "Rota Kommo autorizada indisponivel";
-    const senderToken = kommoIntent
-      ? await this.claimKommoSender(log, kommoIntent)
-      : null;
-    if (kommoIntent && !senderToken)
-      return {
-        conversionEventLogId: log.id,
-        workspaceId: log.workspaceId,
-        status: "skipped",
-      };
     const adapterInput = {
       accessToken: resolvedDestination.accessToken,
       pixelId: resolvedDestination.pixelId,
@@ -888,6 +880,28 @@ export class ConversionEventsService {
       eventTime: log.eventOccurredAt,
       testEventCode: options.testEventCode ?? null,
     };
+    const preflight = resolvedDestination.routeError
+      ? {
+          status: "not_configured" as const,
+          requestPayload: null,
+          responseSummary: { routeResolution: "blocked" },
+          errorMessage: resolvedDestination.routeError,
+          errorCode: "MissingMetaDestination" as const,
+        }
+      : kommoIntent
+        ? preflightMetaCapiEvent(adapterInput)
+        : null;
+    // Rejected configuration does not consume the one durable dispatch attempt.
+    const senderToken =
+      kommoIntent && !preflight
+        ? await this.claimKommoSender(log, kommoIntent)
+        : null;
+    if (kommoIntent && !preflight && !senderToken)
+      return {
+        conversionEventLogId: log.id,
+        workspaceId: log.workspaceId,
+        status: "skipped",
+      };
     // The durable claim is separate and never expires, including on failure
     // here. An ordinary post-claim read would still leave a TOCTOU window.
     const dispatchKommo = async () => {
@@ -944,19 +958,11 @@ export class ConversionEventsService {
     };
     let adapterResult;
     try {
-      adapterResult = resolvedDestination.routeError
-        ? {
-            status: "not_configured" as const,
-            requestPayload: null,
-            responseSummary: {
-              routeResolution: "blocked",
-            },
-            errorMessage: resolvedDestination.routeError,
-            errorCode: "MissingMetaDestination" as const,
-          }
-        : kommoIntent
+      adapterResult =
+        preflight ??
+        (kommoIntent
           ? await dispatchKommo()
-          : await this.metaCapiAdapter.sendEvent(adapterInput);
+          : await this.metaCapiAdapter.sendEvent(adapterInput));
     } catch (error) {
       if (
         senderToken &&
@@ -1054,6 +1060,51 @@ export class ConversionEventsService {
           },
         });
       });
+    } else if (kommoIntent && log.workspaceId) {
+      const written = await this.prisma.$transaction(async (tx) => {
+        await lockKommoDispatch(tx, log.workspaceId!);
+        const pending = await tx.kommoConversionDedupe.findFirst({
+          where: {
+            workspaceId: log.workspaceId!,
+            conversionEventLogId: log.id,
+            senderAttempts: 0,
+            senderLeaseToken: null,
+            publicationStatus: { not: "delivery_unknown" },
+          },
+        });
+        if (
+          !pending ||
+          kommoIntent!.eventId !== eventId ||
+          !Object.entries(kommoIntent!).every(
+            ([key, value]) =>
+              (pending.publicationIntent as Record<string, unknown> | null)?.[
+                key
+              ] === value,
+          ) ||
+          !(await kommoPublicationAuthorized(
+            tx,
+            log.workspaceId!,
+            kommoIntent!,
+          ))
+        )
+          return false;
+        const updated = await tx.conversionEventLog.updateMany({
+          where: {
+            id: log.id,
+            workspaceId: log.workspaceId!,
+            status: "ready_to_send",
+            eventId,
+          },
+          data: deliveryData,
+        });
+        return Boolean(updated.count);
+      });
+      if (!written)
+        return {
+          conversionEventLogId: log.id,
+          workspaceId: log.workspaceId,
+          status: "skipped",
+        };
     } else {
       await this.prisma.conversionEventLog.update({
         where: { id: log.id },
@@ -1246,14 +1297,13 @@ export class ConversionEventsService {
   private async resolveDeliveryRoute(
     log: ConversionEventLogRecord,
   ): Promise<ResolvedConversionDestination> {
-    if (
-      log.workspaceId &&
-      this.connectionResolver &&
-      (await this.connectionResolver.hasNormalizedConnections(log.workspaceId))
-    ) {
+    if (log.workspaceId && this.connectionResolver) {
       try {
         const route = await this.connectionResolver.resolveCapiRoute({
           workspaceId: log.workspaceId,
+          ...(log.sourceTrigger === "kommo_stage"
+            ? { requireNormalized: true }
+            : {}),
           metaAccountId: log.metaAccountId,
           campaignId: log.campaignId,
           adId: log.adId,

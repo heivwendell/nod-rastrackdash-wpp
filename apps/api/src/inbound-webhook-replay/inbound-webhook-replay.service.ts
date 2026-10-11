@@ -71,6 +71,7 @@ const replayItemInclude = {
       },
       channel: {
         include: {
+          whatsappInstance: true,
           routes: {
             where: {
               active: true,
@@ -996,6 +997,27 @@ export class InboundWebhookReplayService {
         route.metaConversionDestinationId ===
           event.resolvedConversionDestinationId,
     );
+    // Only the instance bound to this tenant-owned inbound origin is trusted.
+    const channelInstance = event.channel.whatsappInstance;
+    if (
+      item.workspaceId !== event.workspaceId ||
+      connection.workspaceId !== event.workspaceId ||
+      event.connectionId !== connection.id ||
+      event.channelId !== event.channel.id ||
+      connection.provider !== event.provider ||
+      delivery.provider !== event.provider ||
+      delivery.workspaceId !== event.workspaceId ||
+      delivery.connectionId !== connection.id ||
+      event.channel.workspaceId !== event.workspaceId ||
+      event.channel.connectionId !== connection.id ||
+      (event.channel.whatsappInstanceId &&
+        (!channelInstance ||
+          channelInstance.id !== event.channel.whatsappInstanceId ||
+          channelInstance.workspaceId !== event.workspaceId ||
+          channelInstance.status !== "active"))
+    ) {
+      throw new ReplayItemFailure("inbound_webhook_replay_context_changed");
+    }
     const now = new Date();
 
     if (
@@ -1023,12 +1045,16 @@ export class InboundWebhookReplayService {
 
     if (
       !business ||
+      business.workspaceId !== event.workspaceId ||
+      business.credential.workspaceId !== event.workspaceId ||
       business.status !== "active" ||
       business.credential.status !== "active" ||
       !reporting ||
+      reporting.workspaceId !== event.workspaceId ||
       !reporting.active ||
       reporting.businessConnectionId !== business.id ||
       !destination ||
+      destination.workspaceId !== event.workspaceId ||
       destination.status !== "configured" ||
       !routeStillActive
     ) {
@@ -1065,6 +1091,7 @@ export class InboundWebhookReplayService {
 
     const lead = await this.leads.upsertFromWhatsappWebhook({
       workspaceId: event.workspaceId,
+      whatsappInstanceId: event.channel.whatsappInstanceId ?? undefined,
       name: parsedEvent.contact.name ?? undefined,
       phone,
       source: event.provider,
@@ -1169,7 +1196,11 @@ export class InboundWebhookReplayService {
       result.error ||
       !parsedEvent ||
       parsedEvent.provider !== item.event.provider ||
-      parsedEvent.externalMessageId !== item.event.externalMessageId
+      parsedEvent.externalMessageId !== item.event.externalMessageId ||
+      parsedEvent.adId !== item.event.adId ||
+      parsedEvent.organizationId !== item.event.channel.organizationId ||
+      parsedEvent.channel.providerChannelId !==
+        item.event.channel.providerChannelId
     ) {
       throw new ReplayItemFailure("inbound_webhook_replay_event_mismatch");
     }

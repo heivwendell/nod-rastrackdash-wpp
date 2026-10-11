@@ -39,7 +39,7 @@ export function deferred<T = void>() {
   });
   return { promise, resolve, reject };
 }
-export function kommoHarness() {
+export function kommoHarness(extraTables: string[] = []) {
   let time = new Date("2026-10-05T12:00:00Z");
   vi.stubEnv(
     "KOMMO_CRM_ENCRYPTION_KEY",
@@ -76,6 +76,7 @@ export function kommoHarness() {
     "diagnosticEvent",
     "purchaseReview",
     "providerConversionRuleExecution",
+    ...extraTables,
   ];
   for (const name of tableNames) {
     state[name] = [];
@@ -101,11 +102,13 @@ export function kommoHarness() {
       return result;
     };
     const apply = (row: any, data: any) => {
-      for (const [key, value] of Object.entries(data) as any)
+      for (const [key, value] of Object.entries(data) as any) {
+        if (value === undefined) continue;
         row[key] =
           value && typeof value === "object" && "increment" in value
             ? row[key] + value.increment
             : structuredClone(value);
+      }
       row.updatedAt = new Date(time);
       return copy(row);
     };
