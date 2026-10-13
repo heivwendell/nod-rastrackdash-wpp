@@ -10,6 +10,8 @@ import type {
   ReportOverviewDto,
   ReportFunnelStepDto,
   ReportPaginationDto,
+  ReportSortDto,
+  ReportSortKeyDto,
 } from "@wpptrack/shared";
 import { BarChart3, CalendarRange, Download, RefreshCcw } from "lucide-react";
 import Link from "next/link";
@@ -24,6 +26,29 @@ import { MetaEntityControls } from "./meta-entity-controls";
 import { MetaReportFilters } from "./meta-report-filters";
 import { ReportAdPreview } from "./report-ad-preview";
 import {
+  REPORT_INSIGHT_FETCH_SIZE,
+  parseReportInsightObjective,
+  reportInsightObjectiveKeys,
+  reportInsightSorts,
+  type ReportInsightObjective,
+} from "./report-insights";
+import {
+  ReportInsightsPanel,
+  type ReportInsightFetch,
+  type ReportInsightRow,
+} from "./report-insights-panel";
+import {
+  ReportSortHeader,
+  ReportSortToolbar,
+  type ReportSortAction,
+} from "./report-sort-controls";
+import {
+  nextReportSort,
+  parseReportSort,
+  reportSortColumnKeys,
+  reportSortVisibleInMetricGroup,
+} from "./report-sort";
+import {
   ReportPageSelectionCheckbox,
   ReportSelectionCheckbox,
   ReportSelectionToolbar,
@@ -37,6 +62,7 @@ import {
 
 type ReportsSearchParams = Record<string, string | string[] | undefined>;
 type ReportView = "campaigns" | "adsets" | "ads";
+type ReportMode = "table" | "insights";
 type ReportMetricGroup = "overview" | "traffic" | "funnel" | "revenue";
 type ReportFetchState = "real" | "empty" | "error";
 type CampaignReportsResult = {
@@ -133,13 +159,20 @@ type ReportFilters = {
   nameContains?: string;
   nameScope?: string;
   metrics?: ReportMetricGroup;
+  mode?: ReportMode;
+  objective?: ReportInsightObjective;
   page?: number;
   pageSize?: number;
   since?: string;
   selectedIds?: string;
+  sort?: ReportSortDto;
   status?: string;
   until?: string;
   whatsappClassification?: string;
+};
+type ReportSortColumn = {
+  cost: ReportSortAction;
+  count: ReportSortAction;
 };
 
 function money(cents: number | null) {
@@ -271,6 +304,98 @@ async function getAdReports(filters: ReportFilters): Promise<AdReportsResult> {
   }
 }
 
+type ReportInsightsResult = {
+  cost: ReportInsightFetch;
+  report: ReportOverviewDto | AdSetReportOverviewDto | AdReportOverviewDto | null;
+  volume: ReportInsightFetch;
+};
+
+async function getReportInsightRanking(
+  view: ReportView,
+  filters: ReportFilters,
+  sort: ReportSortDto,
+): Promise<{
+  fetch: ReportInsightFetch;
+  report: ReportOverviewDto | AdSetReportOverviewDto | AdReportOverviewDto | null;
+}> {
+  // Rankings read the head of the API ordering, which is applied to the whole
+  // filtered population before pagination; the table page is never reused.
+  const query = reportQuery({
+    ...filters,
+    page: 1,
+    pageSize: REPORT_INSIGHT_FETCH_SIZE,
+    sort,
+  });
+
+  try {
+    if (view === "adsets") {
+      const report = await serverApiFetch<AdSetReportOverviewDto>(
+        `/reports/adsets?${query}`,
+      );
+
+      return {
+        fetch: {
+          state: "real",
+          pagination: report.pagination,
+          rows: report.adSets,
+          totals: report.totals,
+        },
+        report,
+      };
+    }
+
+    if (view === "ads") {
+      const report = await serverApiFetch<AdReportOverviewDto>(
+        `/reports/ads?${query}`,
+      );
+
+      return {
+        fetch: {
+          state: "real",
+          pagination: report.pagination,
+          rows: report.ads,
+          totals: report.totals,
+        },
+        report,
+      };
+    }
+
+    const report = await serverApiFetch<ReportOverviewDto>(
+      `/reports/campaigns?${query}`,
+    );
+
+    return {
+      fetch: {
+        state: "real",
+        pagination: report.pagination,
+        rows: report.campaigns,
+        totals: report.totals,
+      },
+      report,
+    };
+  } catch {
+    return { fetch: { state: "error" }, report: null };
+  }
+}
+
+async function getReportInsights(
+  view: ReportView,
+  filters: ReportFilters,
+  objective: ReportInsightObjective,
+): Promise<ReportInsightsResult> {
+  const sorts = reportInsightSorts(objective);
+  const [volume, cost] = await Promise.all([
+    getReportInsightRanking(view, filters, sorts.volume),
+    getReportInsightRanking(view, filters, sorts.cost),
+  ]);
+
+  return {
+    cost: cost.fetch,
+    report: volume.report ?? cost.report,
+    volume: volume.fetch,
+  };
+}
+
 async function getMetaStructureReport(): Promise<MetaStructureReportDto | null> {
   try {
     return await serverApiFetch<MetaStructureReportDto>(
@@ -375,6 +500,11 @@ function reportQuery(
     params.set("pageSize", String(filters.pageSize));
   }
 
+  if (includePagination && filters.sort) {
+    params.set("sort", filters.sort.key);
+    params.set("dir", filters.sort.direction);
+  }
+
   return params.toString();
 }
 
@@ -403,7 +533,11 @@ async function syncMetaReports(formData: FormData) {
     "whatsappClassification",
     "view",
     "metrics",
+    "mode",
+    "objective",
     "pageSize",
+    "sort",
+    "dir",
   ]) {
     const value = formText(formData, key);
 
@@ -612,6 +746,10 @@ function reportView(value?: string): ReportView {
   return value === "adsets" || value === "ads" ? value : "campaigns";
 }
 
+function reportMode(value?: string): ReportMode {
+  return value === "insights" ? value : "table";
+}
+
 function reportMetricGroup(value?: string): ReportMetricGroup {
   return value === "traffic" || value === "funnel" || value === "revenue"
     ? value
@@ -763,6 +901,14 @@ function applyReportUiParams(
     params.set("metrics", filters.metrics);
   }
 
+  if (filters.mode === "insights") {
+    params.set("mode", filters.mode);
+
+    if (filters.objective && filters.objective !== "real_conversations") {
+      params.set("objective", filters.objective);
+    }
+  }
+
   return params;
 }
 
@@ -795,8 +941,12 @@ function reportMetricGroupHref(
   view: ReportView,
   filters: ReportFilters,
 ): string {
+  const sort =
+    filters.sort && reportSortVisibleInMetricGroup(filters.sort.key, metrics)
+      ? filters.sort
+      : undefined;
   const params = new URLSearchParams(
-    reportQuery({ ...filters, page: 1 }, true),
+    reportQuery({ ...filters, page: 1, sort }, true),
   );
 
   params.set("view", view);
@@ -806,6 +956,92 @@ function reportMetricGroupHref(
   }
 
   return `/reports?${params.toString()}`;
+}
+
+function reportSortAction(
+  view: ReportView,
+  filters: ReportFilters,
+  key: ReportSortKeyDto,
+  label: string,
+): ReportSortAction {
+  const active = filters.sort?.key === key;
+
+  return {
+    active,
+    direction: active && filters.sort ? filters.sort.direction : "desc",
+    href: reportPageHref(
+      view,
+      { ...filters, sort: nextReportSort(filters.sort, key) },
+      1,
+    ),
+    label,
+  };
+}
+
+function reportSortColumn(
+  view: ReportView,
+  filters: ReportFilters,
+  step: ReportFunnelStepDto,
+): ReportSortColumn | null {
+  const keys = reportSortColumnKeys(step.key);
+
+  if (!keys) {
+    return null;
+  }
+
+  return {
+    count: reportSortAction(view, filters, keys.count, step.label),
+    cost: reportSortAction(view, filters, keys.cost, `Custo por ${step.label}`),
+  };
+}
+
+function ReportSortHiddenInputs({ sort }: { sort?: ReportSortDto }) {
+  if (!sort) {
+    return null;
+  }
+
+  return (
+    <>
+      <input type="hidden" name="sort" value={sort.key} />
+      <input type="hidden" name="dir" value={sort.direction} />
+    </>
+  );
+}
+
+function ReportModeHiddenInputs({
+  mode,
+  objective,
+}: {
+  mode: ReportMode;
+  objective: ReportInsightObjective;
+}) {
+  if (mode !== "insights") {
+    return null;
+  }
+
+  return (
+    <>
+      <input type="hidden" name="mode" value={mode} />
+      <input type="hidden" name="objective" value={objective} />
+    </>
+  );
+}
+
+function reportInsightTableHref(
+  view: ReportView,
+  filters: ReportFilters,
+  sort: ReportSortDto,
+): string {
+  const metrics =
+    filters.metrics && reportSortVisibleInMetricGroup(sort.key, filters.metrics)
+      ? filters.metrics
+      : "overview";
+
+  return reportPageHref(
+    view,
+    { ...filters, metrics, mode: undefined, objective: undefined, sort },
+    1,
+  );
 }
 
 const campaignSummaryCopy: ReportEntityCopy = {
@@ -1431,12 +1667,27 @@ function SummaryMetricsCells({
   );
 }
 
+function visibleReportFunnelSteps(
+  funnelSteps: ReportFunnelStepDto[],
+  metricGroup: ReportMetricGroup,
+): ReportFunnelStepDto[] {
+  if (metricGroup === "traffic") {
+    return funnelSteps.filter((step) => step.key === "real_conversations");
+  }
+
+  return metricGroup === "overview" || metricGroup === "funnel"
+    ? funnelSteps
+    : [];
+}
+
 function PerformanceMetricHeaders({
   funnelSteps,
   metricGroup,
+  sortColumn,
 }: {
   funnelSteps: ReportFunnelStepDto[];
   metricGroup: ReportMetricGroup;
+  sortColumn: (step: ReportFunnelStepDto) => ReportSortColumn | null;
 }) {
   const showOverview = metricGroup === "overview";
   const showTraffic = metricGroup === "traffic";
@@ -1452,9 +1703,20 @@ function PerformanceMetricHeaders({
     <>
       <th>Investimento</th>
       {showOverview || showTraffic ? <th>Conversas Meta</th> : null}
-      {visibleFunnelSteps.map((step) => (
-        <th key={step.key}>{step.label}</th>
-      ))}
+      {visibleFunnelSteps.map((step) => {
+        const column = sortColumn(step);
+
+        return column ? (
+          <ReportSortHeader
+            cost={column.cost}
+            count={column.count}
+            key={step.key}
+            label={step.label}
+          />
+        ) : (
+          <th key={step.key}>{step.label}</th>
+        );
+      })}
       {showTraffic ? <th>Total recebido</th> : null}
       {showOverview || showRevenue ? <th>Receita trafego</th> : null}
       {showRevenue ? (
@@ -1883,12 +2145,22 @@ export default async function ReportsPage({
     asStringParam(resolvedSearchParams.selectedIds),
   );
   const activeView = reportView(asStringParam(resolvedSearchParams.view));
+  const activeMode = reportMode(asStringParam(resolvedSearchParams.mode));
+  const insightObjective = parseReportInsightObjective(
+    asStringParam(resolvedSearchParams.objective),
+  );
+  const showTable = activeMode === "table";
   const activeMetricGroup = reportMetricGroup(
     asStringParam(resolvedSearchParams.metrics),
   );
   const page = positiveIntegerParam(
     asStringParam(resolvedSearchParams.page),
     1,
+  );
+  const sort = parseReportSort(
+    asStringParam(resolvedSearchParams.sort),
+    asStringParam(resolvedSearchParams.dir),
+    activeMetricGroup,
   );
   const pageSize = Math.min(
     positiveIntegerParam(asStringParam(resolvedSearchParams.pageSize), 10),
@@ -1927,8 +2199,11 @@ export default async function ReportsPage({
     status,
     delivery,
     selectedIds,
+    sort,
     whatsappClassification,
     metrics: activeMetricGroup,
+    mode: activeMode,
+    objective: insightObjective,
   };
   const structureFilters: MetaStructureFilters = {
     nameContains: structureNameContains,
@@ -1941,26 +2216,30 @@ export default async function ReportsPage({
   const shouldLoadMetaStructure =
     diagnosticRequested || structureFiltersApplied;
   const hasComparison = Boolean(
-    activeView === "campaigns" && compareSince && compareUntil,
+    showTable && activeView === "campaigns" && compareSince && compareUntil,
   );
   const [
     campaignReports,
     adSetReports,
     adReports,
+    insightReports,
     currentWorkspaceResult,
     comparisonReports,
     metaAssets,
     metaStructure,
   ] = await Promise.all([
-    activeView === "campaigns"
+    showTable && activeView === "campaigns"
       ? getCampaignReports(requestedReportFilters)
       : Promise.resolve(null),
-    activeView === "adsets"
+    showTable && activeView === "adsets"
       ? getAdSetReports(requestedReportFilters)
       : Promise.resolve(null),
-    activeView === "ads"
+    showTable && activeView === "ads"
       ? getAdReports(requestedReportFilters)
       : Promise.resolve(null),
+    showTable
+      ? Promise.resolve(null)
+      : getReportInsights(activeView, requestedReportFilters, insightObjective),
     getCurrentWorkspaceResource(),
     hasComparison
       ? getCampaignReports({
@@ -1969,13 +2248,18 @@ export default async function ReportsPage({
           until: compareUntil,
           page: undefined,
           pageSize: undefined,
+          sort: undefined,
         })
       : Promise.resolve(null),
     getMetaAssets(),
     shouldLoadMetaStructure ? getMetaStructureReport() : Promise.resolve(null),
   ]);
   const loadedReport =
-    campaignReports?.report ?? adSetReports?.report ?? adReports?.report;
+    campaignReports?.report ??
+    adSetReports?.report ??
+    adReports?.report ??
+    insightReports?.report ??
+    undefined;
   const since = requestedSince ?? loadedReport?.since ?? undefined;
   const until = requestedUntil ?? loadedReport?.until ?? undefined;
   const reportFilters = {
@@ -2023,20 +2307,23 @@ export default async function ReportsPage({
     campaignReports?.state ??
     adSetReports?.state ??
     adReports?.state ??
-    "error";
+    (insightReports?.report ? "real" : "error");
   const rangeLabel =
     campaignReports?.report.rangeLabel ??
     adSetReports?.report.rangeLabel ??
     adReports?.report.rangeLabel ??
+    insightReports?.report?.rangeLabel ??
     "API indisponivel";
   const pagination: ReportPaginationDto | undefined =
     campaignReports?.report.pagination ??
     adSetReports?.report.pagination ??
-    adReports?.report.pagination;
+    adReports?.report.pagination ??
+    insightReports?.report?.pagination;
   const currentTotals: ReportTotals =
     campaignReports?.report.totals ??
     adSetReports?.report.totals ??
     adReports?.report.totals ??
+    insightReports?.report?.totals ??
     reportTotals(activeRows);
   const summaryMetrics = reportSummaryMetrics(activeMetricGroup, currentTotals);
   const metaSummary = metaStructureSummary(metaStructure, metaAssets);
@@ -2105,16 +2392,64 @@ export default async function ReportsPage({
   const noReviewPermission = workspacePermissionsUnavailable
     ? "Permissoes indisponiveis"
     : "Sem permissao para revisar";
-  const reportTitle = {
-    ads: "Performance por anuncio",
-    adsets: "Performance por conjunto",
-    campaigns: "Performance por campanha",
-  }[activeView];
+  const reportTitle = (
+    showTable
+      ? {
+          ads: "Performance por anuncio",
+          adsets: "Performance por conjunto",
+          campaigns: "Performance por campanha",
+        }
+      : {
+          ads: "Insights por anuncio",
+          adsets: "Insights por conjunto",
+          campaigns: "Insights por campanha",
+        }
+  )[activeView];
+  const insightSorts = reportInsightSorts(insightObjective);
+  const insightObjectiveLinks = reportInsightObjectiveKeys.map((objective) => ({
+    href: reportViewHref(activeView, { ...reportFilters, objective }),
+    objective,
+  }));
+  const insightEntityHref = (row: ReportInsightRow) => {
+    if (activeView === "campaigns") {
+      return reportViewHref("adsets", {
+        ...reportFilters,
+        campaignId: row.id,
+        adSetId: undefined,
+        adId: undefined,
+        page: 1,
+        selectedIds: undefined,
+      });
+    }
+
+    if (activeView === "adsets") {
+      return reportViewHref("ads", {
+        ...reportFilters,
+        campaignId: row.campaignId,
+        adSetId: row.id,
+        adId: undefined,
+        page: 1,
+        selectedIds: undefined,
+      });
+    }
+
+    return undefined;
+  };
   const activeCopy = {
     ads: adSummaryCopy,
     adsets: adSetSummaryCopy,
     campaigns: campaignSummaryCopy,
   }[activeView];
+  const sortColumn = (step: ReportFunnelStepDto) =>
+    reportSortColumn(activeView, reportFilters, step);
+  const mobileSortActions = visibleReportFunnelSteps(
+    currentTotals.funnelSteps,
+    activeMetricGroup,
+  ).flatMap((step) => {
+    const column = sortColumn(step);
+
+    return column ? [column.count, column.cost] : [];
+  });
   const activeMetricLabel = {
     funnel: "Funil",
     overview: "Visao geral",
@@ -2151,6 +2486,26 @@ export default async function ReportsPage({
         <p>
           Metricas Meta Ads combinadas com leads reais e eventos de conversao.
         </p>
+        <nav
+          aria-label="Modo do relatorio"
+          className="report-view-tabs report-mode-tabs"
+        >
+          {(
+            [
+              ["table", "Tabela"],
+              ["insights", "Insights"],
+            ] as const
+          ).map(([mode, label]) => (
+            <Link
+              aria-current={activeMode === mode ? "page" : undefined}
+              className={activeMode === mode ? "active" : ""}
+              href={reportViewHref(activeView, { ...reportFilters, mode })}
+              key={mode}
+            >
+              {label}
+            </Link>
+          ))}
+        </nav>
       </header>
 
       <section
@@ -2190,6 +2545,11 @@ export default async function ReportsPage({
               type="hidden"
               name="compareUntil"
               value={compareUntil ?? ""}
+            />
+            <ReportSortHiddenInputs sort={sort} />
+            <ReportModeHiddenInputs
+              mode={activeMode}
+              objective={insightObjective}
             />
             <div className="report-period-context">
               <CalendarRange aria-hidden="true" size={17} />
@@ -2291,6 +2651,11 @@ export default async function ReportsPage({
                     name="whatsappClassification"
                     value={whatsappClassification ?? ""}
                   />
+                  <ReportSortHiddenInputs sort={sort} />
+                  <ReportModeHiddenInputs
+                    mode={activeMode}
+                    objective={insightObjective}
+                  />
                   <SubmitButton
                     className="button ghost"
                     pendingLabel="Sincronizando..."
@@ -2371,6 +2736,10 @@ export default async function ReportsPage({
             compareUntil={compareUntil}
             view={activeView}
             pageSize={pageSize}
+            sort={sort}
+            insightObjective={
+              activeMode === "insights" ? insightObjective : undefined
+            }
           />
         </div>
       </section>
@@ -2421,55 +2790,79 @@ export default async function ReportsPage({
         </div>
       ) : null}
 
-      <section
-        className="report-results-overview"
-        aria-label="Resumo dos resultados filtrados"
-      >
-        <div className="report-results-heading">
-          <div className="report-results-title">
-            <BarChart3 aria-hidden="true" size={20} />
-            <div>
-              <span className="eyebrow">Resultados</span>
-              <h2>{activeMetricLabel}</h2>
-            </div>
-          </div>
-          <nav className="report-metric-tabs" aria-label="Grupo de metricas">
-            {(
-              [
-                ["overview", "Visao geral"],
-                ["traffic", "Trafego"],
-                ["funnel", "Funil"],
-                ["revenue", "Receita"],
-              ] as const
-            ).map(([metricGroup, label]) => (
-              <Link
-                aria-current={
-                  activeMetricGroup === metricGroup ? "page" : undefined
-                }
-                className={activeMetricGroup === metricGroup ? "active" : ""}
-                href={reportMetricGroupHref(
-                  metricGroup,
-                  activeView,
-                  reportFilters,
-                )}
-                key={metricGroup}
-              >
-                {label}
-              </Link>
-            ))}
-          </nav>
-        </div>
+      {insightReports ? (
+        <ReportInsightsPanel
+          cost={insightReports.cost}
+          costTableHref={reportInsightTableHref(
+            activeView,
+            reportFilters,
+            insightSorts.cost,
+          )}
+          entityHref={insightEntityHref}
+          level={activeView}
+          objective={insightObjective}
+          objectiveLinks={insightObjectiveLinks}
+          periodLabel={requestedPeriodLabel}
+          volume={insightReports.volume}
+          volumeTableHref={reportInsightTableHref(
+            activeView,
+            reportFilters,
+            insightSorts.volume,
+          )}
+        />
+      ) : null}
 
-        <div className="report-summary-strip">
-          {summaryMetrics.map((metric) => (
-            <article key={metric.label}>
-              <span>{metric.label}</span>
-              <strong>{metric.value}</strong>
-              <small>{metric.detail}</small>
-            </article>
-          ))}
-        </div>
-      </section>
+      {showTable ? (
+        <section
+          className="report-results-overview"
+          aria-label="Resumo dos resultados filtrados"
+        >
+          <div className="report-results-heading">
+            <div className="report-results-title">
+              <BarChart3 aria-hidden="true" size={20} />
+              <div>
+                <span className="eyebrow">Resultados</span>
+                <h2>{activeMetricLabel}</h2>
+              </div>
+            </div>
+            <nav className="report-metric-tabs" aria-label="Grupo de metricas">
+              {(
+                [
+                  ["overview", "Visao geral"],
+                  ["traffic", "Trafego"],
+                  ["funnel", "Funil"],
+                  ["revenue", "Receita"],
+                ] as const
+              ).map(([metricGroup, label]) => (
+                <Link
+                  aria-current={
+                    activeMetricGroup === metricGroup ? "page" : undefined
+                  }
+                  className={activeMetricGroup === metricGroup ? "active" : ""}
+                  href={reportMetricGroupHref(
+                    metricGroup,
+                    activeView,
+                    reportFilters,
+                  )}
+                  key={metricGroup}
+                >
+                  {label}
+                </Link>
+              ))}
+            </nav>
+          </div>
+
+          <div className="report-summary-strip">
+            {summaryMetrics.map((metric) => (
+              <article key={metric.label}>
+                <span>{metric.label}</span>
+                <strong>{metric.value}</strong>
+                <small>{metric.detail}</small>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {comparisonReports && comparisonTotals ? (
         <details className="surface-panel report-comparison-panel">
@@ -2492,7 +2885,11 @@ export default async function ReportsPage({
         </details>
       ) : null}
 
-      {activeView === "campaigns" ? (
+      {activeRows.length > 0 ? (
+        <ReportSortToolbar actions={mobileSortActions} />
+      ) : null}
+
+      {showTable && activeView === "campaigns" ? (
         <div className="table-wrap report-table-scroll">
           <table
             className="performance-table"
@@ -2516,6 +2913,7 @@ export default async function ReportsPage({
                 <PerformanceMetricHeaders
                   funnelSteps={currentTotals.funnelSteps}
                   metricGroup={activeMetricGroup}
+                  sortColumn={sortColumn}
                 />
                 <th className="performance-review-column">Revisao WhatsApp</th>
               </tr>
@@ -2637,7 +3035,7 @@ export default async function ReportsPage({
         </div>
       ) : null}
 
-      {activeView === "adsets" ? (
+      {showTable && activeView === "adsets" ? (
         <div className="table-wrap report-table-scroll">
           <table
             className="performance-table"
@@ -2661,6 +3059,7 @@ export default async function ReportsPage({
                 <PerformanceMetricHeaders
                   funnelSteps={currentTotals.funnelSteps}
                   metricGroup={activeMetricGroup}
+                  sortColumn={sortColumn}
                 />
                 <th className="performance-review-column">Revisao WhatsApp</th>
               </tr>
@@ -2786,7 +3185,7 @@ export default async function ReportsPage({
         </div>
       ) : null}
 
-      {activeView === "ads" ? (
+      {showTable && activeView === "ads" ? (
         <div className="table-wrap report-table-scroll">
           <table
             className="performance-table"
@@ -2810,6 +3209,7 @@ export default async function ReportsPage({
                 <PerformanceMetricHeaders
                   funnelSteps={currentTotals.funnelSteps}
                   metricGroup={activeMetricGroup}
+                  sortColumn={sortColumn}
                 />
                 <th className="performance-review-column">Revisao WhatsApp</th>
               </tr>
@@ -2942,12 +3342,14 @@ export default async function ReportsPage({
         </div>
       ) : null}
 
-      <ReportPagination
-        copy={activeCopy}
-        filters={reportFilters}
-        pagination={pagination}
-        view={activeView}
-      />
+      {showTable ? (
+        <ReportPagination
+          copy={activeCopy}
+          filters={reportFilters}
+          pagination={pagination}
+          view={activeView}
+        />
+      ) : null}
 
       {shouldLoadMetaStructure ? (
         <details className="surface-panel meta-diagnostic-panel" open>
@@ -3053,6 +3455,11 @@ export default async function ReportsPage({
               type="hidden"
               name="whatsappClassification"
               value={whatsappClassification ?? ""}
+            />
+            <ReportSortHiddenInputs sort={sort} />
+            <ReportModeHiddenInputs
+              mode={activeMode}
+              objective={insightObjective}
             />
             <select
               className="filter-control"

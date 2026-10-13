@@ -29,9 +29,15 @@ import type {
   ReportDailyComparisonPointDto,
   ReportOverviewDto,
   ReportPaginationDto,
+  ReportSortDto,
 } from "@wpptrack/shared";
 import { PrismaService } from "../common/prisma/prisma.service";
 import { isSupportedConversionEventName } from "../conversion-events/conversion-event-registry";
+import {
+  BLOCKED_CONVERSION_RETRY_LIMIT,
+  canRetryConversionEvent,
+  configurationBlockedConversionEventWhere,
+} from "../conversion-events/conversion-event-retry";
 import { buildMetaCapiPayload } from "../conversion-events/meta-capi-payload.builder";
 import { FunnelConfigurationService } from "../conversion-rules/funnel-configuration.service";
 import { InboundWebhookChannelRoutesService } from "../inbound-webhooks/inbound-webhook-channel-routes.service";
@@ -66,6 +72,7 @@ import {
   type ReportingMetricLead,
   type ReportingMetricScope,
 } from "./reporting-metrics.engine";
+import { sortReportRows, type SortableReportRow } from "./report-row-sort";
 
 export type MetaStructureSyncInput = {
   workspaceId: string;
@@ -109,6 +116,7 @@ type ReportFilterInput = {
   whatsappClassification?: WhatsappClassificationFilter;
   page?: number;
   pageSize?: number;
+  sort?: ReportSortDto;
 };
 
 type ReportMetricScopeFilter = {
@@ -255,6 +263,15 @@ type MetaAdRecord = {
 };
 
 type ConversionEventRecord = ReportingMetricEvent;
+
+type ConversionAuditFilters = {
+  workspaceId: string;
+  since?: string;
+  until?: string;
+  eventName?: string;
+  deliveryState?: ConversionAuditDeliveryStateDto;
+  source?: ConversionAuditSourceDto;
+};
 
 type ConversionAuditEventRecord = {
   id: string;
@@ -1783,7 +1800,6 @@ export class MetaReportingService {
       whatsappAds,
       deliveredIds,
     );
-    const paginated = this.paginateRecords(filteredCampaigns, input);
     const campaignIds = filteredCampaigns.map(
       (campaign) => campaign.campaignId,
     );
@@ -1854,15 +1870,19 @@ export class MetaReportingService {
     const metricByCampaign = dailyComparisonAvailable
       ? dailyMetricByCampaign
       : childMetricByCampaign;
-    const rows = paginated.items.map((campaign) =>
-      this.toReportRow(
-        campaign,
-        conversionLogsByCampaign.get(campaign.campaignId) ?? [],
-        leadsByCampaign.get(campaign.campaignId) ?? [],
-        funnelStages,
-        metricByCampaign.get(campaign.campaignId),
-      ),
+    const paginated = this.paginateReportRows(
+      filteredCampaigns,
+      input,
+      (campaign) =>
+        this.toReportRow(
+          campaign,
+          conversionLogsByCampaign.get(campaign.campaignId) ?? [],
+          leadsByCampaign.get(campaign.campaignId) ?? [],
+          funnelStages,
+          metricByCampaign.get(campaign.campaignId),
+        ),
     );
+    const rows = paginated.items;
     const workspaceMeta = filteredCampaigns.reduce(
       (totals, campaign) => {
         const metricOverride = metricByCampaign.get(campaign.campaignId);
@@ -1944,23 +1964,7 @@ export class MetaReportingService {
     page: number;
     pageSize: number;
   }): Promise<ConversionAuditOverviewDto> {
-    const where: Prisma.ConversionEventLogWhereInput = {
-      workspaceId: input.workspaceId,
-      ...this.conversionAuditPeriodWhere(input),
-      ...(input.eventName ? { eventName: input.eventName } : {}),
-      ...(input.deliveryState
-        ? { status: { in: this.conversionAuditStatuses(input.deliveryState) } }
-        : {}),
-      AND: [
-        this.conversionAuditSourceWhere(input.source),
-        {
-          NOT: {
-            sourceTrigger: "auto_lead",
-            ctwaClid: null,
-          },
-        },
-      ],
-    };
+    const where = this.conversionAuditWhere(input);
     const [events, statusGroups, funnelStages] = await Promise.all([
       this.prisma.conversionEventLog.findMany({
         where,
@@ -2036,6 +2040,24 @@ export class MetaReportingService {
         this.conversionAuditEventDto(event, eventLabels, context),
       ),
     };
+  }
+
+  async getBlockedConversionEventRetryIds(
+    input: ConversionAuditFilters,
+  ): Promise<string[]> {
+    const events = await this.prisma.conversionEventLog.findMany({
+      where: {
+        AND: [
+          this.conversionAuditWhere(input),
+          configurationBlockedConversionEventWhere,
+        ],
+      },
+      orderBy: [{ eventOccurredAt: "desc" }, { id: "desc" }],
+      take: BLOCKED_CONVERSION_RETRY_LIMIT,
+      select: { id: true },
+    });
+
+    return events.map((event) => event.id);
   }
 
   async getConversionEventAuditDetail(input: {
@@ -2743,7 +2765,6 @@ export class MetaReportingService {
       adsForNameFilter,
       deliveredIds,
     );
-    const paginated = this.paginateRecords(filteredAdSets, input);
     const adSetIds = filteredAdSets.map((adSet) => adSet.adSetId);
     const [conversionLogs, leads, dailyInsights] = await Promise.all([
       this.getMetricConversionEvents(input, { adSetIds }),
@@ -2776,7 +2797,7 @@ export class MetaReportingService {
       since: input.since,
       until: input.until,
     });
-    const rows = paginated.items.map((adSet) =>
+    const paginated = this.paginateReportRows(filteredAdSets, input, (adSet) =>
       this.toAdSetReportRow({
         adSet,
         campaignName:
@@ -2788,6 +2809,7 @@ export class MetaReportingService {
         metricOverride: dailyMetricByAdSet?.get(adSet.adSetId),
       }),
     );
+    const rows = paginated.items;
     const totalsMeta = filteredAdSets.reduce(
       (totals, adSet) => ({
         spendCents:
@@ -2878,7 +2900,6 @@ export class MetaReportingService {
       adSetNames,
       deliveredIds,
     );
-    const paginated = this.paginateRecords(filteredAds, input);
     const adIds = filteredAds.map((ad) => ad.adId);
     const [conversionLogs, leads, dailyInsights] = await Promise.all([
       this.getMetricConversionEvents(input, { adIds }),
@@ -2908,7 +2929,7 @@ export class MetaReportingService {
       since: input.since,
       until: input.until,
     });
-    const rows = paginated.items.map((ad) =>
+    const paginated = this.paginateReportRows(filteredAds, input, (ad) =>
       this.toAdReportRow({
         ad,
         campaignName:
@@ -2920,6 +2941,7 @@ export class MetaReportingService {
         metricOverride: dailyMetricByAd?.get(ad.adId),
       }),
     );
+    const rows = paginated.items;
     const totalsMeta = filteredAds.reduce(
       (totals, ad) => ({
         spendCents:
@@ -3211,6 +3233,26 @@ export class MetaReportingService {
       items: records.slice(offset, offset + pageSize),
       pagination: { page, pageSize, totalItems, totalPages },
     };
+  }
+
+  private paginateReportRows<TRecord, TRow extends SortableReportRow>(
+    records: TRecord[],
+    input: Pick<ReportFilterInput, "page" | "pageSize" | "sort">,
+    toRow: (record: TRecord) => TRow,
+  ): PaginatedRecords<TRow> {
+    if (!input.sort) {
+      const paginated = this.paginateRecords(records, input);
+
+      return { ...paginated, items: paginated.items.map(toRow) };
+    }
+
+    // A metric sort needs every filtered row before slicing the page. The
+    // entities, events and leads behind those rows are already loaded for
+    // the totals, so this adds row construction but no queries.
+    return this.paginateRecords(
+      sortReportRows(records.map(toRow), input.sort),
+      input,
+    );
   }
 
   private groupByOptionalKey<
@@ -4260,8 +4302,7 @@ export class MetaReportingService {
       occurredAt: event.eventOccurredAt.toISOString(),
       sentAt: event.sentAt?.toISOString() ?? null,
       status: event.status,
-      canRetry:
-        event.status === "error" && event.errorCode === "MetaCapiNetworkError",
+      canRetry: canRetryConversionEvent(event),
       providerResponseSummary:
         event.status === "sent" && event.providerResponseSummary != null
           ? "Meta confirmou o recebimento"
@@ -4587,6 +4628,23 @@ export class MetaReportingService {
     return [
       ...new Set(values.filter((value): value is string => Boolean(value))),
     ];
+  }
+
+  private conversionAuditWhere(
+    input: ConversionAuditFilters,
+  ): Prisma.ConversionEventLogWhereInput {
+    return {
+      workspaceId: input.workspaceId,
+      ...this.conversionAuditPeriodWhere(input),
+      ...(input.eventName ? { eventName: input.eventName } : {}),
+      ...(input.deliveryState
+        ? { status: { in: this.conversionAuditStatuses(input.deliveryState) } }
+        : {}),
+      AND: [
+        this.conversionAuditSourceWhere(input.source),
+        { NOT: { sourceTrigger: "auto_lead", ctwaClid: null } },
+      ],
+    };
   }
 
   private conversionAuditSourceWhere(

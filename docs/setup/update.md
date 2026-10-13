@@ -31,7 +31,7 @@ Tudo isto já existe e continua valendo depois da atualização. Recriar qualque
 
 ## Antes de começar (5 minutos)
 
-1. **Confira o que mudou.** Leia a seção `[Unreleased]` (ou a versão mais recente) do [`CHANGELOG.md`](../../CHANGELOG.md). Se a novidade pedir uma **variável de ambiente nova**, anote — ela entra no passo 2. Data Crazy, por exemplo, **não** pede env nova.
+1. **Confira o que mudou.** Leia a seção `[Unreleased]` (ou a versão mais recente) do [`CHANGELOG.md`](../../CHANGELOG.md). Se a novidade pedir uma **variável de ambiente nova**, anote — ela entra no passo 2. Data Crazy, por exemplo, **não** pede env nova; o **Conectar Meta (PalmUP)** pede `PALMUP_META_BROKER_URL` (pública, veja [a seção dele](#conectar-meta-palmup--login-social-sem-app-meta-próprio)).
 2. **Garanta um backup recente do PostgreSQL.** O Dokploy oferece backup para serviços de banco (o nome da tela varia por versão). Se você nunca configurou, faça um agora, antes do redeploy. Não é burocracia: é o seu "desfazer".
 3. **Escolha um horário calmo.** O redeploy da API leva alguns minutos de build; durante a troca do container, webhooks podem receber erro e os provedores costumam reenviar.
 
@@ -91,7 +91,8 @@ Por que isso é obrigatório: telas novas (como a opção Data Crazy) só existe
 3. `/backoffice/license` → licença **utilizável**.
 4. `/integrations` → as conexões que já existiam continuam lá, com o status de antes.
 5. Se você usa gatilhos: `/settings#whatsapp-triggers` continua mostrando suas origens e **Nova regra**.
-6. Versão instalada conferida como em [Conferir depois do deploy](#conferir-depois-do-deploy).
+6. Se você envia conversões para a Meta: faça o passo de [Conversões Meta depois desta atualização](#conversões-meta-depois-desta-atualização-trocar-token) **antes** de conferir os eventos.
+7. Versão instalada conferida como em [Conferir depois do deploy](#conferir-depois-do-deploy).
 
 ### Exemplo: depois da atualização com Data Crazy
 
@@ -101,6 +102,80 @@ Por que isso é obrigatório: telas novas (como a opção Data Crazy) só existe
 - Passo a passo completo da conexão: [`whatsapp-providers.md`](whatsapp-providers.md#data-crazy--conexão-de-webhook-de-entrada-ctwa) e passo 10.2 do [Guia do Aluno](../GUIA-ALUNO.md#102-painel-webhooks-de-entrada--umbler-gupshup-data-crazy-e-meta-whatsapp-cloud-api).
 
 Se **Webhooks de entrada** nem aparece, ou Data Crazy não está na lista, veja [Não apareceu Data Crazy / feature nova depois do merge](troubleshooting.md#não-apareceu-data-crazy--feature-nova-depois-do-merge).
+
+## Conversões Meta depois desta atualização (Trocar token)
+
+A rota e o token são escolhidos para **cada evento**. Uma BM parcial de outro
+fluxo, com roteamento avançado desligado, não migra o LeadSubmitted legado.
+Se o evento aponta para uma conta vinculada a BM, uma rota explícita ou Kommo,
+essa rota precisa estar ativa e autorizada; uma falha não autoriza tentar outro
+destino. Com roteamento avançado ligado, uma estrutura incompleta bloqueia.
+
+No OAuth compatível com a conta/BM legada, o token CAPI dedicado continua sendo
+usado quando preenchido. Sem ele, usa-se a credencial OAuth ativa. No manual,
+usa-se a credencial da própria BM. Sincronizar anúncios pela Graph **não prova**
+que o token selecionado conseguiu enviar CAPI.
+
+### Diagnosticar antes de trocar token
+
+Confira o SHA instalado e, para o evento bloqueado, a auditoria de conversões,
+o JobAttempt e o resultado de `meta.capi.send_event`. Esse log também registra
+rejeições antes do POST; sua existência isolada não prova envio à Meta.
+`MissingMetaDestination` pode representar uma falha de resolução da rota ou
+da credencial, não apenas ausência de Pixel/Página.
+
+Não é necessário regravar o mesmo token só por atualizar. Corrija a causa
+indicada pela auditoria. Quando a credencial precisar de troca, use **Trocar
+token** no card existente e valide; não recrie BM, lead ou conexão. Tokens
+entram somente na UI, nunca em chat ou logs compartilhados.
+
+### Eventos que já ficaram "Bloqueado"
+
+Depois de corrigir configuração, o owner pode abrir `/events`, selecionar o
+período, clicar em **Aplicar** e usar **Reenviar bloqueados** (até 500 por
+clique), ou **Reenviar** na linha. Eventos enviados ficam fora desse fluxo.
+Confira o resultado do worker e do envio, sem presumir sucesso ao entrar na fila.
+
+Para novos bloqueios Kommo comprovadamente anteriores ao POST, a tentativa
+permanece livre e o retry pode enviar após o reparo. As verificações de licença,
+origem, vínculo, rota e destino continuam obrigatórias. Canais inbound com
+instância vinculada passam a gravar essa instância no lead; canais sem vínculo
+não recebem uma instância inventada. Leads antigos não são preenchidos em lote.
+
+**Kommo com resultado desconhecido ou tentativa já consumida:** pare e peça
+investigação ao operador. Timeout/erro de rede após despacho não prova ausência
+de entrega. Esta correção não zera `senderAttempts`, não limpa leases antigos e
+não recupera automaticamente linhas travadas de versões anteriores. Mesmo um
+bloqueio antigo de configuração exige comprovação do que ocorreu antes de
+qualquer intervenção; não faça reset/backfill nem reenvie às cegas.
+
+Compartilhe apenas SHA, horários, status/códigos de erro, tentativas do job,
+presença booleana de instância/anúncio/CTWA, estados dos vínculos Meta e, no
+Kommo, `senderAttempts`, presença de lease e `publicationStatus`. Se houver
+resposta Meta, inclua HTTP/code/subcode/fbtrace_id saneados. Não compartilhe
+payload bruto, headers, telefone, token ou ciphertext.
+
+## Conectar Meta (PalmUP) — login social sem app Meta próprio
+
+Esta versão traz o botão **Conectar Meta (PalmUP)** em **Integrações → Tokens, BMs e destinos**. Com ele, o **owner** do workspace entra com o Facebook pelo app Meta da PalmUP. Você **não** precisa criar um app Meta seu nem gerar token de usuário do sistema para começar.
+
+**Env nova (só na API):** `PALMUP_META_BROKER_URL=https://wpptrack-api.rastrack.app`. Preencha no painel de env do serviço da API no Dokploy ([Passo 2](#passo-2--variáveis-novas-só-se-o-changelog-pedir)) e faça o redeploy da API ([Passo 3](#passo-3--redeploy-da-api-dokploy)). O web na Vercel **não** precisa dela.
+
+- É uma **URL pública**, não é segredo e **não** é App Secret. Não coloque nela, nem em `META_APP_SECRET`, nenhum segredo do app Meta da PalmUP: esse segredo **nunca** vai para a sua VPS.
+- Sem a env, nada quebra: ao clicar no botão, o painel avisa "Login social PalmUP nao configurado", o botão fica apagado e o token permanente funciona como antes.
+
+**Como usar (primeira conexão Meta do workspace):**
+
+1. Abra `/integrations` → **Usar token permanente** (ou **Tokens, BMs e destinos**).
+2. Clique em **Conectar Meta (PalmUP)** e depois em **Abrir login da Meta**. Uma aba nova abre na PalmUP e segue para o Facebook.
+3. Autorize com o perfil que acessa a BM do cliente. Volte para a aba do painel.
+4. Clique em **Ja autorizei, concluir**. O painel segue para o mesmo passo de BM, contas, Pixel e Página de quando você clica em **Validar e proteger** com um token colado.
+
+O pedido vale por cerca de 10 minutos e só pode ser concluído uma vez. Se aparecer "Conexao PalmUP expirada, invalida ou ja utilizada", clique em **Conectar Meta (PalmUP)** de novo.
+
+**O que continua igual:** as orientações de [Conversões Meta depois desta atualização (Trocar token)](#conversões-meta-depois-desta-atualização-trocar-token) e de [Eventos que já ficaram "Bloqueado"](#eventos-que-já-ficaram-bloqueado) continuam valendo, inclusive o passo 4 (**Trocar token** no card que já existe) e o **Reenviar bloqueados** em `/events`. Se você **já tem** um card do seu BM, **não** use **Conectar Meta (PalmUP)** para "consertar" um LeadSubmitted bloqueado: o caminho continua sendo **Trocar token** no mesmo card.
+
+> **Para a IA que conduz o aluno:** `PALMUP_META_BROKER_URL` é pública; nunca a trate como segredo e nunca peça, nem aceite, o App Secret do app Meta da PalmUP. Só o owner vê o botão. O token do login social é resgatado e guardado pela API do aluno e nunca chega ao navegador nem ao chat.
 
 ## Versão instalada
 

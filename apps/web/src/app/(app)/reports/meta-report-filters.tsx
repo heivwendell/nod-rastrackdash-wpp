@@ -16,12 +16,15 @@ type MetaReportFiltersProps = {
   compareSince?: string;
   compareUntil?: string;
   delivery?: "all" | "had_delivery";
+  // Set only while the Insights tab is active; the objective travels with it.
+  insightObjective?: string;
   metrics?: "overview" | "traffic" | "funnel" | "revenue";
   nameContains?: string;
   nameScope?: string;
   pageSize?: number;
   since?: string;
   selectedIds?: string;
+  sort?: { key: string; direction: string };
   status?: string;
   until?: string;
   view?: "campaigns" | "adsets" | "ads";
@@ -98,12 +101,14 @@ export function MetaReportFilters({
   compareSince,
   compareUntil,
   delivery = "all",
+  insightObjective,
   metrics = "overview",
   nameContains,
   nameScope = "campaign",
   pageSize = 10,
   since,
   selectedIds,
+  sort,
   status = "all",
   until,
   view = "campaigns",
@@ -174,6 +179,19 @@ export function MetaReportFilters({
     clearParams.set("adId", adId);
   }
 
+  // Ordering is a table preference, not a filter, so clearing keeps it.
+  if (sort) {
+    clearParams.set("sort", sort.key);
+    clearParams.set("dir", sort.direction);
+  }
+
+  // The Insights tab and its objective are views, not filters, so clearing
+  // keeps them too.
+  if (insightObjective) {
+    clearParams.set("mode", "insights");
+    clearParams.set("objective", insightObjective);
+  }
+
   const advancedFilterCount = [
     nameScope !== "campaign",
     status !== "all",
@@ -208,6 +226,18 @@ export function MetaReportFilters({
       <input type="hidden" name="adSetId" value={adSetId ?? ""} />
       <input type="hidden" name="adId" value={adId ?? ""} />
       <input type="hidden" name="selectedIds" value={selectedIds ?? ""} />
+      {sort ? (
+        <>
+          <input type="hidden" name="sort" value={sort.key} />
+          <input type="hidden" name="dir" value={sort.direction} />
+        </>
+      ) : null}
+      {insightObjective ? (
+        <>
+          <input type="hidden" name="mode" value="insights" />
+          <input type="hidden" name="objective" value={insightObjective} />
+        </>
+      ) : null}
       {presentationMode ? (
         <>
           <input type="hidden" name="businessId" value={selectedBusinessId} />

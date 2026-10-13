@@ -15,6 +15,7 @@ type EncryptedCredential = {
 };
 
 type LegacyIntegration = EncryptedCredential & {
+  status: string;
   capiAccessTokenEncrypted: string | null;
   capiTokenIv: string | null;
   capiTokenTag: string | null;
@@ -127,10 +128,6 @@ export class MetaConnectionResolverService {
       : [];
   }
 
-  async hasNormalizedConnections(workspaceId: string): Promise<boolean> {
-    return this.isNormalizedRoutingEnabled(workspaceId);
-  }
-
   async resolveReportingRoute(input: {
     workspaceId: string;
     reportingAccountId?: string | null;
@@ -222,28 +219,40 @@ export class MetaConnectionResolverService {
     metaAccountId?: string | null;
     businessConnectionId?: string | null;
     conversionDestinationId?: string | null;
+    requireNormalized?: boolean;
   }): Promise<ResolvedMetaCapiRoute> {
     const adAccountId =
       input.metaAccountId?.trim() ||
       (await this.resolveAttributedAdAccountId(input.workspaceId, input));
-    const normalizedRoutingEnabled = await this.isNormalizedRoutingEnabled(
-      input.workspaceId,
+    const legacy = await this.prisma.metaIntegration.findUnique({
+      where: { workspaceId: input.workspaceId },
+    });
+    const explicitRoute = Boolean(
+      input.requireNormalized ||
+      input.businessConnectionId ||
+      input.conversionDestinationId,
     );
-
-    if (!normalizedRoutingEnabled) {
-      return this.resolveLegacyCapiRoute(input.workspaceId);
-    }
-
+    const normalizedRequired =
+      explicitRoute || Boolean(legacy?.advancedRoutingEnabled) || !legacy;
+    // Look up the event's account, including inactive rows. A revoked or paused
+    // matching route must block rather than escaping through legacy credentials.
     const account = adAccountId
       ? await this.prisma.metaReportingAccount.findFirst({
-          where: {
-            workspaceId: input.workspaceId,
-            adAccountId,
-            active: true,
-            businessConnectionId: { not: null },
-          },
+          where: { workspaceId: input.workspaceId, adAccountId },
         })
-      : await this.onlyNormalizedReportingAccount(input.workspaceId);
+      : normalizedRequired
+        ? await this.onlyNormalizedReportingAccount(
+            input.workspaceId,
+            input.businessConnectionId,
+          )
+        : null;
+
+    if (account && !account.active)
+      throw new ConflictException("Conta Meta inativa");
+
+    if (!normalizedRequired && !account?.businessConnectionId) {
+      return this.resolveLegacyCapiRoute(input.workspaceId);
+    }
 
     if (account?.businessConnectionId) {
       if (
@@ -317,14 +326,62 @@ export class MetaConnectionResolverService {
         );
       }
 
+      // Explicit destinations need an existing assignment/default or an active
+      // account allowlist entry. Workspace membership alone is not authorization.
+      if (
+        input.conversionDestinationId &&
+        input.conversionDestinationId !== destinationId
+      )
+        throw new ConflictException(
+          "O destino explicito difere da rota do anuncio",
+        );
+      const allowed =
+        await this.prisma.metaReportingAccountDestination.findMany({
+          where: {
+            workspaceId: input.workspaceId,
+            reportingAccountId: account.id,
+          },
+        });
+      const destinationAuthorized =
+        allowed.length > 0
+          ? allowed.some(
+              (binding) =>
+                binding.active &&
+                binding.conversionDestinationId === destinationId,
+            )
+          : destinationId === account.conversionDestinationId ||
+            destinationId === connection.defaultConversionDestinationId;
+      if (!destinationAuthorized)
+        throw new ConflictException(
+          "Destino nao autorizado para esta conta Meta",
+        );
+
+      let accessToken = this.decrypt(connection.credential);
+      // OAuth retains its dedicated CAPI token only for the matching legacy
+      // account/BM. Manual routes always use their own credential.
+      if (
+        connection.credential.source === "oauth" &&
+        legacy &&
+        (legacy.selectedAdAccountId === account.adAccountId ||
+          (legacy.selectedBusinessId &&
+            legacy.selectedBusinessId === connection.businessManagerId)) &&
+        legacy.capiAccessTokenEncrypted
+      ) {
+        if (legacy.status !== "connected")
+          throw new ConflictException("Meta nao conectada");
+        const dedicated = this.decrypt({
+          encryptedAccessToken: legacy.capiAccessTokenEncrypted,
+          tokenIv: legacy.capiTokenIv ?? "",
+          tokenTag: legacy.capiTokenTag ?? "",
+        });
+        if (dedicated.trim()) accessToken = dedicated;
+      }
+
       return {
         source:
           connection.credential.source === "oauth" ? "legacy_oauth" : "manual",
         workspaceId: input.workspaceId,
-        accessToken:
-          connection.credential.source === "oauth"
-            ? await this.getLegacyCapiAccessToken(input.workspaceId)
-            : this.decrypt(connection.credential),
+        accessToken,
         reportingAccountId: account.id,
         adAccountId: account.adAccountId,
         businessConnectionId: connection.id,
@@ -435,12 +492,14 @@ export class MetaConnectionResolverService {
     return null;
   }
 
-  private async onlyNormalizedReportingAccount(workspaceId: string) {
+  private async onlyNormalizedReportingAccount(
+    workspaceId: string,
+    businessConnectionId?: string | null,
+  ) {
     const accounts = await this.prisma.metaReportingAccount.findMany({
       where: {
         workspaceId,
-        active: true,
-        businessConnectionId: { not: null },
+        businessConnectionId: businessConnectionId ?? { not: null },
       },
       take: 2,
     });
@@ -455,7 +514,7 @@ export class MetaConnectionResolverService {
       where: { workspaceId },
     })) as LegacyIntegration | null;
 
-    if (!legacy) {
+    if (!legacy || legacy.status !== "connected") {
       throw new NotFoundException("Meta nao conectada");
     }
 
@@ -470,23 +529,16 @@ export class MetaConnectionResolverService {
       return null;
     }
 
-    return this.prisma.metaConversionDestination.findFirst({
+    const destination = await this.prisma.metaConversionDestination.findFirst({
       where: {
         workspaceId,
         id: primaryConversionDestinationId,
+        status: "configured",
       },
     });
-  }
-
-  private async getLegacyCapiAccessToken(workspaceId: string): Promise<string> {
-    const legacy = await this.getLegacyIntegration(workspaceId);
-
-    return this.decrypt({
-      encryptedAccessToken:
-        legacy.capiAccessTokenEncrypted ?? legacy.encryptedAccessToken,
-      tokenIv: legacy.capiTokenIv ?? legacy.tokenIv,
-      tokenTag: legacy.capiTokenTag ?? legacy.tokenTag,
-    });
+    if (!destination)
+      throw new ConflictException("O destino legado precisa ser validado");
+    return destination;
   }
 
   private async isNormalizedRoutingEnabled(
@@ -510,8 +562,13 @@ export class MetaConnectionResolverService {
   }
 
   private assertNormalizedConnectionActive(connection: {
+    workspaceId: string;
     status: string;
-    credential: { status: string };
+    credential: {
+      workspaceId: string;
+      status: string;
+      expiresAt?: Date | null;
+    };
   }): void {
     if (connection.status !== "active") {
       throw new ConflictException(
@@ -519,7 +576,12 @@ export class MetaConnectionResolverService {
       );
     }
 
-    if (connection.credential.status !== "active") {
+    if (
+      connection.credential.workspaceId !== connection.workspaceId ||
+      connection.credential.status !== "active" ||
+      (connection.credential.expiresAt &&
+        connection.credential.expiresAt <= new Date())
+    ) {
       throw new ConflictException(
         "O token desta conexao Meta esta pausado ou requer validacao",
       );
