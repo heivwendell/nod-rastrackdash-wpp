@@ -5,6 +5,9 @@ import type {
   InboundWebhookConnectionStatusUpdateInputDto,
 } from "@wpptrack/shared";
 import { hasEligibleInboundMetaRoute } from "./inbound-webhook-meta-route-eligibility";
+import type { RuntimeEnv } from "../common/runtime/runtime.module";
+import { assertMetaCloudSigningConfigured, inboundParserProductionEligible } from "./inbound-webhook-parser-eligibility";
+import { studentReplayDispatchUnsettled } from "../inbound-webhook-replay/student-replay-context";
 
 /**
  * Single implementation of the "promote a connection to production" and
@@ -249,6 +252,7 @@ export async function applyInboundWebhookConnectionStatus(
     actorUserId: string;
     requireValidMetaRoute: boolean;
     seats: ExternalChannelSeatHook;
+    env?: RuntimeEnv;
   },
 ): Promise<PersistedInboundWebhookConnection> {
   const { workspaceId, connectionId, status, actorUserId } = input;
@@ -259,6 +263,7 @@ export async function applyInboundWebhookConnectionStatus(
   );
 
   if (status === "production") {
+    assertMetaCloudSigningConfigured(current.provider, input.env ?? process.env);
     await assertProductionReady(transaction, current, {
       requireValidMetaRoute: input.requireValidMetaRoute,
     });
@@ -370,9 +375,9 @@ async function assertProductionReady(
   connection: PersistedInboundWebhookConnection,
   options: { requireValidMetaRoute: boolean },
 ): Promise<void> {
-  if (connection.parserRelease.status !== "certified") {
+  if (connection.parserRelease.provider !== connection.provider || !inboundParserProductionEligible(connection.parserRelease)) {
     throw new ConflictException(
-      "Certifique o parser antes de ativar o envio automatico",
+      "Certifique o parser antes de ativar o envio automatico. Esta versao da integracao nao e nativa validada ou foi retirada.",
     );
   }
 
@@ -424,7 +429,7 @@ async function assertProductionReady(
     },
   });
 
-  if (activeReplay > 0) {
+  if (activeReplay > 0 || (connection.provider === "meta_cloud" && await studentReplayDispatchUnsettled(transaction, connection.workspaceId, connection.id))) {
     throw new ConflictException(
       "Finalize o replay em andamento antes de ativar a producao",
     );

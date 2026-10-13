@@ -1,3 +1,4 @@
+import { inboundParserProductionEligible } from "../inbound-webhooks/inbound-webhook-parser-eligibility";
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
@@ -1324,10 +1325,10 @@ export class ProviderConversionProductionService {
       rule.conversionRule.eventName !== "Purchase" ||
       (!manuallyApproved && rule.mode !== "production") ||
       (!manuallyApproved && !rule.productionActivatedAt) ||
-      rule.parserRelease.status !== "certified" ||
+      !inboundParserProductionEligible(rule.parserRelease) ||
       rule.connection.removedAt ||
       rule.connection.status !== "production" ||
-      rule.connection.parserRelease.status !== "certified" ||
+      !inboundParserProductionEligible(rule.connection.parserRelease) ||
       rule.connectionId !== delivery.connectionId ||
       rule.parserReleaseId !== rule.connection.parserReleaseId ||
       rule.connection.parserRelease.version !== delivery.parserVersion ||
@@ -1361,11 +1362,11 @@ export class ProviderConversionProductionService {
       rule.conversionRule.triggerType !== "provider_automation" ||
       rule.mode !== "production" ||
       !rule.productionActivatedAt ||
-      rule.parserRelease.status !== "certified" ||
+      !inboundParserProductionEligible(rule.parserRelease) ||
       rule.parserRelease.version !== UMBLER_AUTOMATION_V1_PARSER_VERSION ||
       rule.connection.removedAt ||
       rule.connection.status !== "production" ||
-      rule.connection.parserRelease.status !== "certified" ||
+      !inboundParserProductionEligible(rule.connection.parserRelease) ||
       rule.connectionId !== delivery.connectionId ||
       delivery.parserVersion !== UMBLER_AUTOMATION_V1_PARSER_VERSION ||
       delivery.purpose !== "conversion_automation" ||

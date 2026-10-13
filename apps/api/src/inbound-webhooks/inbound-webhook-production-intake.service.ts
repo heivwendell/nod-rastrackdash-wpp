@@ -1,3 +1,4 @@
+import { inboundParserProductionEligible } from "./inbound-webhook-parser-eligibility";
 import { Inject, Injectable } from "@nestjs/common";
 import { PrismaService } from "../common/prisma/prisma.service";
 import { RUNTIME_ENV, type RuntimeEnv } from "../common/runtime/runtime.module";
@@ -72,12 +73,13 @@ export class InboundWebhookProductionIntakeService {
         },
         connection: {
           select: {
+            provider: true,
             status: true,
             removedAt: true,
             productionActivatedAt: true,
             parserRelease: {
               select: {
-                status: true,
+                status: true, provider: true, version: true,
               },
             },
           },
@@ -186,7 +188,7 @@ export class InboundWebhookProductionIntakeService {
             removedAt: null,
             productionActivatedAt: { not: null },
             conversionRule: { active: true },
-            parserRelease: { status: "certified" },
+            parserRelease: { OR: [{ status: "certified" }, { provider: "meta_cloud", version: "v1", status: "observation_only" }] },
             connection: {
               status: "production",
               removedAt: null,
@@ -246,10 +248,11 @@ export class InboundWebhookProductionIntakeService {
   private isAfterActivationBoundary(event: {
     delivery: { firstReceivedAt: Date };
     connection: {
+      provider: string;
       status: string;
       removedAt: Date | null;
       productionActivatedAt: Date | null;
-      parserRelease: { status: string };
+      parserRelease: { status: string; provider: string; version: string };
     };
     channel: {
       status: string;
@@ -262,7 +265,9 @@ export class InboundWebhookProductionIntakeService {
     return Boolean(
       event.connection.status === "production" &&
       event.connection.removedAt === null &&
-      event.connection.parserRelease.status === "certified" &&
+      event.connection.parserRelease.provider === event.connection.provider &&
+      inboundParserProductionEligible(event.connection.parserRelease) &&
+      (event.connection.provider !== "meta_cloud" || Boolean(this.env.META_APP_SECRET?.trim())) &&
       event.channel.status === "active" &&
       connectionActivatedAt &&
       channelActivatedAt &&

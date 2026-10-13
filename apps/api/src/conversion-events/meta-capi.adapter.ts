@@ -108,8 +108,8 @@ export class MetaCapiAdapter {
       testEventCode: input.testEventCode ?? null,
     });
 
-    let response: Response;
-    let payload: Record<string, unknown>;
+    let response: Response | undefined;
+    let payload: unknown;
     try {
       const request: RequestInit = {
         method: "POST",
@@ -125,35 +125,70 @@ export class MetaCapiAdapter {
         this.fetcher(url.toString(), request),
         dispatch.signal,
       );
-      payload = await bounded(
-        response.json().catch(() => ({})),
-        dispatch.signal,
-      );
+      // A received non-2xx is an explicit rejection even if its body is not JSON.
+      if (!response.ok) {
+        return {
+          status: "error",
+          requestPayload,
+          responseSummary: { httpStatus: response.status },
+          errorMessage: "Meta CAPI request failed",
+          errorCode: "MetaCapiRejected",
+        };
+      }
+      payload = await bounded(response.json(), dispatch.signal);
     } catch {
       return {
         status: "error",
         requestPayload,
         responseSummary: null,
-        errorMessage: "Meta CAPI network request failed",
-        errorCode: "MetaCapiNetworkError",
+        errorMessage: response?.ok
+          ? "Meta CAPI delivery acknowledgement unavailable"
+          : "Meta CAPI network request failed",
+        errorCode: response?.ok
+          ? "MetaCapiDeliveryUnknown"
+          : "MetaCapiNetworkError",
         deliveryOutcome: "unknown",
       };
     }
 
-    if (!response.ok) {
+    // This adapter sends exactly one event. HTTP success alone is inconclusive.
+    // Meta's EventResponse defines int events_received, list[str] messages and
+    // string fbtrace_id. Never persist arbitrary provider bodies/messages (PII).
+    const ack =
+      payload && typeof payload === "object" && !Array.isArray(payload)
+        ? (payload as Record<string, unknown>)
+        : null;
+    if (
+      !ack ||
+      "error" in ack ||
+      !Number.isInteger(ack.events_received) ||
+      ack.events_received !== 1 ||
+      !Array.isArray(ack.messages) ||
+      !ack.messages.every((m) => typeof m === "string") ||
+      typeof ack.fbtrace_id !== "string" ||
+      !ack.fbtrace_id.trim() ||
+      ack.fbtrace_id.length > 256
+    ) {
       return {
         status: "error",
         requestPayload,
-        responseSummary: payload,
-        errorMessage: "Meta CAPI request failed",
-        errorCode: "MetaCapiRejected",
+        responseSummary: {
+          httpStatus: response.status,
+          acknowledgement: "invalid",
+        },
+        errorMessage: "Meta CAPI delivery acknowledgement unavailable",
+        errorCode: "MetaCapiDeliveryUnknown",
+        deliveryOutcome: "unknown",
       };
     }
 
     return {
       status: "sent",
       requestPayload,
-      responseSummary: payload,
+      responseSummary: {
+        events_received: 1,
+        messageCount: ack.messages.length,
+      },
       errorMessage: null,
       errorCode: null,
     };

@@ -1,3 +1,4 @@
+import { inboundParserProductionEligible } from "./inbound-webhook-parser-eligibility";
 import { createHash } from "node:crypto";
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
@@ -768,10 +769,10 @@ export class UazapiProviderConversionService {
     channel: { status: string; productionActivatedAt: Date | null } | null;
   }): string | null {
     const { rule, channel } = input;
-    if (rule.parserRelease.status !== "certified") {
+    if (!inboundParserProductionEligible(rule.parserRelease)) {
       return "rule_parser_not_certified";
     }
-    if (rule.connection.parserRelease.status !== "certified") {
+    if (!inboundParserProductionEligible(rule.connection.parserRelease)) {
       return "connection_parser_not_certified";
     }
     if (rule.parserReleaseId !== rule.connection.parserReleaseId) {

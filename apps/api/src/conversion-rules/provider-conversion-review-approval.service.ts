@@ -1,3 +1,4 @@
+import { inboundParserProductionEligible } from "../inbound-webhooks/inbound-webhook-parser-eligibility";
 import { createHash } from "node:crypto";
 import {
   BadRequestException,
@@ -280,8 +281,8 @@ export class ProviderConversionReviewApprovalService {
       !channel ||
       rule.removedAt !== null ||
       !rule.conversionRule.active ||
-      rule.parserRelease.status !== "certified" ||
-      rule.connection.parserRelease.status !== "certified" ||
+      !inboundParserProductionEligible(rule.parserRelease) ||
+      !inboundParserProductionEligible(rule.connection.parserRelease) ||
       rule.parserReleaseId !== rule.connection.parserReleaseId ||
       rule.connection.status !== "production" ||
       rule.connection.removedAt !== null ||

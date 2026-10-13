@@ -11,13 +11,23 @@ import { InboundWebhookPayloadEncryptionService } from "../src/inbound-webhooks/
 import { LeadsService } from "../src/leads/leads.service";
 import { DiagnosticsService } from "../src/diagnostics/diagnostics.service";
 import { KommoService } from "../src/kommo/kommo.service";
+import { applyInboundWebhookConnectionStatus } from "../src/inbound-webhooks/inbound-webhook-production-activation";
+import {
+  studentReplayContext,
+  studentReplayEventHash,
+} from "../src/inbound-webhook-replay/student-replay-context";
 import { kommoHarness } from "./support/kommo-stateful-harness";
 
 // Persistence/queues and remote Kommo enrichment are synthetic boundaries.
 // Parser, AEAD, LeadsService, canonical events, resolver, worker and CAPI adapter
 // are real imports. Only fetch decides the provider result; no module mocks.
 function fixture(source: "oauth" | "manual" = "oauth") {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-05T12:01:00Z"));
   const h = kommoHarness([
+    "workspaceMember",
+    "inboundWebhookConnection",
+    "inboundWebhookChannel",
     "metaIntegration",
     "metaBusinessConnection",
     "metaConversionDestination",
@@ -29,6 +39,7 @@ function fixture(source: "oauth" | "manual" = "oauth") {
   h.state.lead.length = 0; // No artificial whatsappInstanceId on a prebuilt lead.
   const env = {
     API_PUBLIC_URL: "https://fixture.invalid",
+    META_APP_SECRET: "synthetic-own-app-secret",
     INBOUND_WEBHOOKS_ENABLED: "true",
     INBOUND_WEBHOOK_PRODUCTION_ENABLED: "true",
     INBOUND_WEBHOOK_REPLAY_ENABLED: "true",
@@ -84,7 +95,14 @@ function fixture(source: "oauth" | "manual" = "oauth") {
   });
   const fetcher = vi.fn<typeof fetch>(
     async () =>
-      new Response(JSON.stringify({ events_received: 1 }), { status: 200 }),
+      new Response(
+        JSON.stringify({
+          events_received: 1,
+          messages: [],
+          fbtrace_id: "synthetic-trace",
+        }),
+        { status: 200 },
+      ),
   );
   const resolver = new MetaConnectionResolverService(h.prisma, encryption);
   // Even a deployment token must not circumvent a rejected workspace credential.
@@ -98,6 +116,7 @@ function fixture(source: "oauth" | "manual" = "oauth") {
     encryption,
     resolver,
     h.license as any,
+    env,
   );
   const processor = new ConversionEventProcessor(conversions, h.prisma);
   const leads = new LeadsService(h.prisma);
@@ -123,6 +142,7 @@ function fixture(source: "oauth" | "manual" = "oauth") {
     conversionQueue as any,
     {} as any,
     env,
+    h.license as any,
   );
   const kommo = new KommoService(
     h.prisma,
@@ -182,12 +202,19 @@ function fixture(source: "oauth" | "manual" = "oauth") {
   const connection = Object.assign(route.channel.connection, {
     id: "inbound-a",
     provider: "meta_cloud",
-    parserRelease: { status: "certified", version: "v1" },
+    updatedAt: new Date(),
+    parserRelease: {
+      id: "release-a",
+      provider: "meta_cloud",
+      status: "certified",
+      version: "v1",
+    },
   });
   const channel = Object.assign(route.channel, {
     connectionId: connection.id,
     organizationId: normalized.organizationId,
     providerChannelId: normalized.channel.providerChannelId,
+    connectedPhone: normalized.channel.connectedPhone,
     whatsappInstance: {
       id: "instance-a",
       workspaceId: "workspace-a",
@@ -196,6 +223,7 @@ function fixture(source: "oauth" | "manual" = "oauth") {
     routes: [
       {
         id: route.id,
+        workspaceId: "workspace-a",
         active: true,
         validationStatus: "valid",
         metaBusinessConnectionId: business.id,
@@ -230,6 +258,7 @@ function fixture(source: "oauth" | "manual" = "oauth") {
     dedupeKey: normalized.dedupeKey,
     externalMessageId: normalized.externalMessageId,
     occurredAt: normalized.occurredAt,
+    deliveryId: delivery.id,
     resolvedBusinessConnectionId: business.id,
     resolvedReportingAccountId: reporting.id,
     resolvedConversionDestinationId: destination.id,
@@ -247,23 +276,37 @@ function fixture(source: "oauth" | "manual" = "oauth") {
     attemptCount: 0,
     event,
   };
+  h.state.inboundWebhookConnection.push(connection);
+  h.state.inboundWebhookChannel.push(channel);
+  h.state.inboundWebhookEvent.push(event);
+  h.state.workspaceMember.push({
+    id: "member-a",
+    userId: "owner-a",
+    workspaceId: "workspace-a",
+    role: "owner",
+    workspace: { operationalStatus: "active" },
+  });
   h.state.inboundWebhookProductionItem.push(item);
   const materialize = async (mode: "production" | "replay" = "production") => {
     if (mode === "production")
-      await production.processItem({
-        productionItemId: item.id,
-        workspaceId: item.workspaceId,
-      });
+      await production
+        .processItem({
+          productionItemId: item.id,
+          workspaceId: item.workspaceId,
+        })
+        .catch((error) => {
+          throw new Error((item as any).errorCode ?? error.message);
+        });
     else {
       // Represents an already authorized isolated batch; exercise the public worker.
       connection.status = "observation";
-      try {
+      {
         const batch = await h.prisma.inboundWebhookReplayBatch.create({
           data: {
             workspaceId: item.workspaceId,
             connectionId: connection.id,
             channelId: channel.id,
-            requestedByUserId: "synthetic-platform-admin",
+            requestedByUserId: "owner-a",
             selection: "canary_1",
             requestedLimit: 1,
             status: "queued",
@@ -283,9 +326,34 @@ function fixture(source: "oauth" | "manual" = "oauth") {
           data: {
             workspaceId: item.workspaceId,
             event,
+            eventId: event.id,
             batchId: batch.id,
             status: "queued",
             attemptCount: 0,
+          },
+        });
+        // Isolated ingress fixture represents explicit owner approval with an
+        // immutable context, not a shortcut in the public student API.
+        await h.prisma.auditLog.create({
+          data: {
+            workspaceId: item.workspaceId,
+            actorUserId: "owner-a",
+            actorType: "owner",
+            action: "inbound_webhook.replay.authorize",
+            targetType: "InboundWebhookReplayBatch",
+            targetId: batch.id,
+            resultStatus: "queued",
+            afterSummary: {
+              studentContext: await studentReplayContext(
+                h.prisma,
+                item.workspaceId,
+                connection.id,
+                channel.id,
+              ),
+              studentEventHashes: {
+                [event.id]: studentReplayEventHash(event as any),
+              },
+            },
           },
         });
         const result = await replay.processBatch({
@@ -299,8 +367,6 @@ function fixture(source: "oauth" | "manual" = "oauth") {
             )?.errorCode,
           );
         }
-      } finally {
-        connection.status = "production";
       }
     }
     return h.state.conversionEventLog[0];
@@ -313,6 +379,21 @@ function fixture(source: "oauth" | "manual" = "oauth") {
       data: { workspaceId: "workspace-a", conversionEventLogId: log.id },
     } as any);
   const stage = async () => {
+    // Kommo requires the origin in production. Promote only after the replay
+    // delivery is confirmed, through the same validated activation operation.
+    if (connection.status === "observation")
+      await applyInboundWebhookConnectionStatus(h.prisma, {
+        workspaceId: "workspace-a",
+        connectionId: connection.id,
+        status: "production",
+        actorUserId: "owner-a",
+        requireValidMetaRoute: true,
+        env,
+        seats: {
+          enforcementEnabled: () => false,
+          activateSeat: async () => undefined,
+        },
+      });
     const webhook = await h.receive();
     expect(await kommo.process(webhook.id, "workspace-a")).toMatchObject({
       status: "queued",
@@ -359,6 +440,7 @@ function fixture(source: "oauth" | "manual" = "oauth") {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });

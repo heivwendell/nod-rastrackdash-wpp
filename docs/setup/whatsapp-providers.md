@@ -203,18 +203,17 @@ a reavaliação não acrescenta rotas automaticamente fora dessa escolha.
 
 **Rota pronta** descreve a rota e os payloads preservados; não significa que
 a conexão já envia. Ative o canal e só depois promova a conexão, que exige
-parser certificado, produção habilitada e nenhum replay em andamento. Confira
+parser elegível, produção habilitada e nenhuma recuperação pendente. Confira
 também a licença e as permissões da instalação. Antes da produção Meta Cloud,
 configure o App Secret do **seu próprio app** somente no servidor conforme a
 seção abaixo; não use segredo PalmUP nem envie valores por chat.
 
-**Limite atual desta edição:** o serviço de certificação/replay existe, mas
-não há endpoint de proprietário nem UI operacional para o aluno certificar o
-parser Meta Cloud ou autorizar esse replay. Se o parser estiver
-`observation_only` ou `retired`, esta correção não libera produção. Não altere
-o banco, certifique outras versões em lote ou ligue replay para contornar o
-bloqueio. A remoção do requisito de primeira CTWA e a assinatura automática
-da WABA não fazem parte desta correção.
+A integração nativa **meta_cloud/v1** já validada pelo produto permite a
+ativação humana em instalações novas e antigas, inclusive quando o estado
+persistido é `observation_only`. Não exige primeira CTWA nem certificação
+privada por instalação. Essa elegibilidade não altera o estado guardado e
+não libera outras versões/implementações ou `retired`. A assinatura manual
+do campo `messages` no app Meta continua necessária.
 
 ### CTWA preservados antes da ativação
 
@@ -232,13 +231,19 @@ uma conversão já enviada. Isso foi verificado com fixtures locais, sem envio
 Meta real. O payload bruto tem retenção de sete dias; sem payload disponível
 esse caminho não pode reprocessar o evento.
 
-O template mantém replay desligado por padrão e não expõe a autorização ao
-aluno. Portanto, nesta entrega **não há um botão/comando de recuperação
-histórica para operar no clone do aluno**. Uma próxima proposta mínima,
-sujeita a aprovação separada, é expor ao proprietário os serviços existentes
-de certificação da versão exata e autorização de um canário por canal, com
-licença, permissões, evidência CTWA, auditoria, retenção e deduplicação. Não é
-uma instrução para editar dados ou executar replay manual em produção.
+O template mantém replay **desligado por padrão**. O operador pode habilitar
+explicitamente `INBOUND_WEBHOOK_REPLAY_ENABLED` na API. O **owner membro do
+workspace corrente** acessa **Recuperar CTWAs anteriores** no canal em
+Integrações: prévia sem envio, nome exato da conexão, confirmação de **Enviar
+um de teste** (conversão real), consulta/polling e, após entrega confirmada
+no mesmo contexto, nova prévia e confirmação de **Recuperar os demais (ate
+500)**. Materialização/fila não significam envio; UNKNOWN não permite retry.
+O contexto é revalidado na autorização, no worker e antes do dispatch.
+
+Leia o [guia do aluno e operador](meta-cloud-recovery.md) para flags, App
+Secret próprio, retenção, resultados, atualização e recuperação. Não edite
+o banco nem apague tentativas para contornar um bloqueio. A validação é
+local com fixtures; nenhum envio Meta real foi feito nesta entrega.
 
 ### `META_APP_SECRET` — opcional para observar, necessário para produção
 
@@ -253,8 +258,10 @@ validar o header `x-hub-signature-256` de cada POST.
 
 Ou seja: dá para homologar sem ele, mas **antes de clicar em "Ativar
 envios automáticos" numa conexão `meta_cloud`, preencha
-`META_APP_SECRET` e faça redeploy da API** — senão as entregas param
-silenciosamente do ponto de vista da Meta.
+`META_APP_SECRET` do próprio app e reinicie a API**. A ativação e a
+autorização de recuperação são bloqueadas enquanto estiver vazio. Uma
+conexão em produção continua recusando POSTs sem assinatura válida. Nunca
+use o segredo PalmUP nem envie o valor por chat.
 
 ## Data Crazy — conexão de webhook de entrada (CTWA)
 

@@ -64,6 +64,7 @@ Cole o [prompt oficial de onboarding](../AI_ONBOARDING_PROMPT.pt-BR.md) em Claud
 - [Troubleshooting](troubleshooting.md)
 - [Meta Ads manual](meta-manual.md)
 - [Provedores de WhatsApp, receivers e matriz de webhook](whatsapp-providers.md)
+- [Meta Cloud: produção e recuperação por owner](meta-cloud-recovery.md)
 - [Guia de cobrança (BYO)](billing/README.md)
 
 ## Release

@@ -17,6 +17,8 @@ export function matches(row: any, where: any): boolean {
       );
     if (value && typeof value === "object" && !(value instanceof Date)) {
       if ("in" in value) return value.in.includes(row[key]);
+      if ("is" in value) return value.is === null ? row[key] == null : matches(row[key] ?? {}, value.is);
+      if ("gte" in value) return row[key] != null && row[key] >= value.gte;
       if ("not" in value) return row[key] !== value.not;
       if ("lt" in value) return row[key] != null && row[key] < value.lt;
       if ("gt" in value) return row[key] != null && row[key] > value.gt;
@@ -54,6 +56,7 @@ export function kommoHarness(extraTables: string[] = []) {
       ["workspaceId", "verifiedAccountId", "dealId", "eventName"],
     ],
     conversionEventLog: [["dedupeKey"]],
+    auditLog: [["id"]],
     kommoPipelineCatalog: [["connectionId", "pipelineId", "statusId"]],
   };
   let sequence = 0;
@@ -83,10 +86,20 @@ export function kommoHarness(extraTables: string[] = []) {
     const copy = (row: any, args: any = {}) => {
       if (!row) return null;
       const result = structuredClone(row);
-      if (args.include?.connection)
+      if (args.include?.connection && name.startsWith("kommo"))
         result.connection = structuredClone(
           state.kommoConnection.find((item) => item.id === row.connectionId),
         );
+      if (name === "inboundWebhookReplayBatch" && args.include?.items) result.items = structuredClone(state.inboundWebhookReplayItem.filter((item) => item.batchId === row.id));
+      if (name === "inboundWebhookEvent") {
+        result.connection = structuredClone(state.inboundWebhookConnection?.find((item) => item.id === row.connectionId) ?? row.connection);
+        result.channel = structuredClone(state.inboundWebhookChannel?.find((item) => item.id === row.channelId) ?? row.channel);
+        result.replayItem = structuredClone(state.inboundWebhookReplayItem?.find((item) => item.eventId === row.id) ?? null);
+      }
+      if (name === "metaReportingAccount" && state.metaReportingAccountDestination && (args.select?.allowedDestinations || args.include?.allowedDestinations)) {
+        const relation = args.select?.allowedDestinations ?? args.include?.allowedDestinations;
+        result.allowedDestinations = structuredClone((state.metaReportingAccountDestination ?? []).filter((binding) => binding.reportingAccountId === row.id && matches(binding, relation.where)));
+      }
       if (args.include?.pipelines)
         result.pipelines = structuredClone(
           state.kommoPipelineCatalog.filter(

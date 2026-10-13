@@ -1,3 +1,4 @@
+import { inboundParserProductionEligible } from "./inbound-webhook-parser-eligibility";
 import { createHash, randomUUID } from "node:crypto";
 import {
   BadRequestException,
@@ -698,10 +699,10 @@ export class InboundConversionAutomationIngestionService {
     if (
       rule.mode !== "production" ||
       !rule.productionActivatedAt ||
-      rule.parserRelease.status !== "certified" ||
+      !inboundParserProductionEligible(rule.parserRelease) ||
       rule.parserRelease.version !== UMBLER_AUTOMATION_V1_PARSER_VERSION ||
       rule.connection.status !== "production" ||
-      rule.connection.parserRelease.status !== "certified"
+      !inboundParserProductionEligible(rule.connection.parserRelease)
     ) {
       throw new ConflictException(
         "Ative o envio automatico da regra antes de reprocessar callbacks",

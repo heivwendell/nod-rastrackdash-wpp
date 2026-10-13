@@ -308,6 +308,20 @@ cada POST:
 Ou seja: opcional para homologar, **obrigatório antes de ativar o envio
 automático** numa conexão `meta_cloud`. É o App Secret do app Meta, não o
 token permanente do Graph de [`meta-manual.md`](meta-manual.md).
+Use o segredo do **próprio app que entrega mensagens**, nunca o da PalmUP.
+A API verifica sua presença antes da ativação e da autorização de recuperação.
+
+### Recuperação histórica Meta Cloud por owner
+
+`INBOUND_WEBHOOK_REPLAY_ENABLED` continua `false` por padrão. O operador pode
+configurar `true` somente na API para disponibilizar prévia e confirmação
+por owner; também exige `INBOUND_WEBHOOKS_ENABLED`, a chave atual
+`INBOUND_WEBHOOK_ENCRYPTION_KEY`, `META_APP_SECRET` próprio, licença e rotas
+autorizadas. Reinicie a API após ajustar suas variáveis; preserve o `.env`
+e a chave existente. A flag não envia histórico nem promove a conexão.
+`INBOUND_WEBHOOK_PRODUCTION_ENABLED` é necessária para novos envios e não
+substitui a habilitação explícita de replay. Consulte o
+[fluxo completo e estados de entrega](meta-cloud-recovery.md).
 
 ## URLs, cookie e primeiro administrador
 

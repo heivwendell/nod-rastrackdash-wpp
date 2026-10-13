@@ -78,7 +78,14 @@ async function sendingHarness() {
   await h.service.process(event.id, event.workspaceId);
   const fetcher = vi.fn(
     async (_url: string, _options?: RequestInit) =>
-      new Response(JSON.stringify({ events_received: 1 }), { status: 200 }),
+      new Response(
+        JSON.stringify({
+          events_received: 1,
+          messages: [],
+          fbtrace_id: "synthetic-trace",
+        }),
+        { status: 200 },
+      ),
   );
   const sender = new ConversionEventsService(
     h.prisma,
@@ -433,7 +440,16 @@ describe("fail-closed Kommo sender outcomes", () => {
     expect(
       await h.service.reprocess("workspace-a", h.event.id, "guard-owner"),
     ).toMatchObject({ status: "blocked", errorCode: "kommo_delivery_unknown" });
-    release.resolve(new Response("{}", { status: 200 }));
+    release.resolve(
+      new Response(
+        JSON.stringify({
+          events_received: 1,
+          messages: [],
+          fbtrace_id: "synthetic-trace",
+        }),
+        { status: 200 },
+      ),
+    );
     expect(await first).toMatchObject({ status: "sent" });
     expect(h.state.kommoConversionDedupe[0]).toMatchObject({
       publicationStatus: "sent",

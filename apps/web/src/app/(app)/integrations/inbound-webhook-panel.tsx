@@ -33,6 +33,7 @@ import type {
   InboundWebhookOneTimeSecret,
 } from "./inbound-webhook-actions";
 import { InboundWebhookRouteEditor } from "./inbound-webhook-route-editor";
+import { InboundRecoveryPanel } from "./inbound-recovery-panel";
 
 type InboundWebhookAction = (
   formData: FormData,
@@ -51,6 +52,7 @@ export type InboundWebhookPanelProps = {
   providerRulesEnabled: boolean;
   metaConfiguration: MetaManualConfigurationDto | null;
   canManage: boolean;
+  canRecover?: boolean;
   createAction: InboundWebhookAction;
   rotateSecretAction: InboundWebhookAction;
   setConnectionStatusAction: InboundWebhookAction;
@@ -105,6 +107,7 @@ export function InboundWebhookPanel({
   providerRulesEnabled,
   metaConfiguration,
   canManage,
+  canRecover = false,
   createAction,
   rotateSecretAction,
   setConnectionStatusAction,
@@ -412,6 +415,7 @@ export function InboundWebhookPanel({
                     />
                   </div>
 
+                  {connection.provider === "meta_cloud" ? <p>Canal habilitado recebe eventos; a conexao precisa de envios automaticos ativos para enviar novos CTWAs. CTWA roteado nao significa enviado. Ativar envios automaticos nao recupera o historico.</p> : null}
                   {canManage ? (
                     <div className="inbound-connection-actions">
                       {connection.status === "observation" &&
@@ -645,6 +649,7 @@ export function InboundWebhookPanel({
                                   </button>
                                 </div>
                               ) : null}
+                              {canRecover && connection.provider === "meta_cloud" ? <InboundRecoveryPanel connectionId={connection.id} channelId={channel.id} connectionName={connection.displayName} /> : null}
                               <InboundWebhookRouteEditor
                                 channel={channel}
                                 metaConfiguration={metaConfiguration}

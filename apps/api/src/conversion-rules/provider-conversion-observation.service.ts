@@ -1,3 +1,4 @@
+import { inboundParserProductionEligible } from "../inbound-webhooks/inbound-webhook-parser-eligibility";
 import { createHash } from "node:crypto";
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
@@ -686,8 +687,8 @@ export class ProviderConversionObservationService {
       };
     }
     if (
-      input.rule.parserRelease.status !== "certified" ||
-      input.rule.connection.parserRelease.status !== "certified" ||
+      !inboundParserProductionEligible(input.rule.parserRelease) ||
+      !inboundParserProductionEligible(input.rule.connection.parserRelease) ||
       (input.decision.rule.triggerType !== "provider_automation" &&
         input.rule.parserReleaseId !== input.rule.connection.parserReleaseId) ||
       input.rule.connection.status !== "production" ||

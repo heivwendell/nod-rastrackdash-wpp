@@ -577,6 +577,7 @@ function renderPanel({
       providerRulesEnabled: true,
       metaConfiguration,
       canManage,
+      canRecover: canManage,
       createAction: action,
       rotateSecretAction: action,
       setConnectionStatusAction: action,
@@ -587,6 +588,17 @@ function renderPanel({
     }),
   );
 }
+
+it("offers student historical CTWA recovery on the Meta connection", () => {
+  const html = renderPanel({ connections: [{
+    ...connectionView,
+    overview: { ...connectionView.overview, connection: {
+      ...connectionView.overview.connection, provider: "meta_cloud", parserVersion: "v1",
+    } },
+  }] });
+  expect(html).toContain("Recuperar CTWAs anteriores");
+  expect(html).toContain("CTWA roteado nao significa enviado");
+});
 
 function inboundRoute({
   id,

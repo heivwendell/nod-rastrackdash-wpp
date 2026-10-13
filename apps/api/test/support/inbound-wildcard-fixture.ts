@@ -89,6 +89,8 @@ export function wildcardFixture() {
     routes: [route],
     status: "discovered",
     connectedPhone: "15550000001",
+    organizationId: "synthetic-waba",
+    providerChannelId: "synthetic-phone",
     productionActivatedAt: null,
     updatedAt: now,
     createdAt: now,
@@ -219,6 +221,7 @@ export function wildcardFixture() {
       actorUserId: "actor",
       requireValidMetaRoute: true,
       seats,
+      env: { META_APP_SECRET: "synthetic-app-secret" },
     });
   const reader = new InboundWebhookMetaRouteReaderService(prisma);
   const routes = new InboundWebhookChannelRoutesService(prisma, reader);
@@ -249,6 +252,7 @@ export function wildcardDispatchFixture() {
     INBOUND_WEBHOOKS_ENABLED: "true",
     INBOUND_WEBHOOK_PRODUCTION_ENABLED: "true",
     INBOUND_WEBHOOK_REPLAY_ENABLED: "true",
+    META_APP_SECRET: "synthetic-app-secret",
     INBOUND_WEBHOOK_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
   };
   const encryption = new InboundWebhookPayloadEncryptionService(env);
@@ -420,6 +424,7 @@ export function wildcardDispatchFixture() {
     conversionQueue as never,
     replayQueue as never,
     env,
+    { getLockState: async () => ({ inert: true, locked: false }) } as never,
   );
   const intake = new InboundWebhookProductionIntakeService(
     h.prisma,
@@ -440,6 +445,9 @@ export function wildcardDispatchFixture() {
     production,
     replay,
     intake,
+    encryption,
+    registry,
+    payload,
   };
 }
 

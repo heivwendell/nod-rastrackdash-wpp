@@ -42,6 +42,7 @@ import { inboundWebhookParserContext } from "../inbound-webhooks/providers/inbou
 import type { ParsedInboundWebhookEvent } from "../inbound-webhooks/providers/inbound-webhook-parser";
 import { InboundWebhookParserRegistry } from "../inbound-webhooks/providers/inbound-webhook-parser.registry";
 import { LeadsService } from "../leads/leads.service";
+import { assertMetaCloudSigningConfigured, inboundParserProductionEligible } from "../inbound-webhooks/inbound-webhook-parser-eligibility";
 
 const terminalStatuses = new Set(["materialized", "duplicate"]);
 const productionItemInclude = {
@@ -224,6 +225,7 @@ export class InboundWebhookProductionService {
         "inbound_webhook_production_context_changed",
       );
     }
+    assertMetaCloudSigningConfigured(connection.provider, this.env);
     const now = new Date();
 
     if (
@@ -240,7 +242,8 @@ export class InboundWebhookProductionService {
       connection.removedAt ||
       connection.status !== "production" ||
       !connection.productionActivatedAt ||
-      connection.parserRelease.status !== "certified" ||
+      connection.parserRelease.provider !== connection.provider ||
+      !inboundParserProductionEligible(connection.parserRelease, this.parserRegistry) ||
       connection.parserRelease.version !== delivery.parserVersion ||
       channel.status !== "active" ||
       !channel.productionActivatedAt ||

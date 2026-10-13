@@ -119,6 +119,7 @@ describe("Meta Cloud BM with three accounts and one destination", () => {
       const h = wildcardFixture();
       h.channel.status = "active";
       h.connection.parserRelease.status = status;
+      if (status === "observation_only") h.connection.parserRelease.version = "v2";
       await expect(h.promote()).rejects.toThrow("Certifique o parser");
     },
   );

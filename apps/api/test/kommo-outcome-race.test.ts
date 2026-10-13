@@ -12,7 +12,17 @@ async function sendingHarness() {
   const h = kommoHarness();
   const event = await h.receive();
   await h.service.process(event.id, event.workspaceId);
-  const fetcher = vi.fn(async () => new Response("{}", { status: 200 }));
+  const fetcher = vi.fn(
+    async () =>
+      new Response(
+        JSON.stringify({
+          events_received: 1,
+          messages: [],
+          fbtrace_id: "synthetic-trace",
+        }),
+        { status: 200 },
+      ),
+  );
   const sender = new ConversionEventsService(
     h.prisma,
     new MetaCapiAdapter({}, fetcher as any),
@@ -118,7 +128,16 @@ describe("confirmed Kommo outcomes dominate stale unknown decisions", () => {
             );
       await overlap.paused.promise;
       expect(overlap.active.has(overlap.recoveryTransaction())).toBe(true);
-      response.resolve(new Response("{}", { status: 200 }));
+      response.resolve(
+        new Response(
+          JSON.stringify({
+            events_received: 1,
+            messages: [],
+            fbtrace_id: "synthetic-trace",
+          }),
+          { status: 200 },
+        ),
+      );
       expect(await sending).toMatchObject({ status: "sent" });
       expect(overlap.active.has(overlap.recoveryTransaction())).toBe(true);
       expect(overlap.commits).not.toContain(overlap.recoveryTransaction());

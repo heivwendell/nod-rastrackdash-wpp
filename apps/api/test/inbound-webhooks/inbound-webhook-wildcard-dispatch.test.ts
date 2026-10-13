@@ -1,34 +1,27 @@
+import { studentReplayFixture } from "../support/student-replay-fixture";
 import "reflect-metadata";
 import { describe, expect, it } from "vitest";
 import {
   wildcardDispatchFixture,
-  wildcardReplayAuthorizationFixture,
 } from "../support/inbound-wildcard-fixture";
 
 describe("wildcard CTWA dispatch and retained history", () => {
   it.each(["wildcard", "optional destination", "explicit"])(
     "selects a historical %s canary through the existing authorization service",
     async (kind) => {
-      const h = wildcardReplayAuthorizationFixture();
+      const h = studentReplayFixture();
       if (kind === "optional destination")
         h.route.metaConversionDestinationId = null;
       if (kind === "explicit") h.route.metaReportingAccountId = "account-1";
       expect(
-        await h.replay.authorizeReplay(
-          "connection",
-          "fixture",
-          "canary_1",
-          "channel",
-          { id: "owner", role: "platform_owner" },
-          null,
-        ),
-      ).toMatchObject({ status: "queued", totalItems: 1 });
+        await h.authorize(),
+      ).toMatchObject({ state: "pending", total: 1 });
       expect(h.prisma.inboundWebhookReplayItem.createMany).toHaveBeenCalledWith(
         {
           data: [
             {
               workspaceId: "ws",
-              batchId: "batch",
+              batchId: expect.any(String),
               eventId: "event",
               status: "queued",
             },
@@ -38,34 +31,20 @@ describe("wildcard CTWA dispatch and retained history", () => {
       );
       expect(h.replayQueue.enqueueBatch).toHaveBeenCalledWith({
         workspaceId: "ws",
-        batchId: "batch",
+        batchId: expect.any(String),
       });
       await expect(
-        h.replay.authorizeReplay(
-          "connection",
-          "fixture",
-          "canary_1",
-          "channel",
-          { id: "owner", role: "platform_owner" },
-          null,
-        ),
-      ).rejects.toThrow("Esta conexao ja possui um replay em andamento");
+        h.authorize(),
+      ).rejects.toThrow("andamento");
     },
   );
 
   it("refuses a historical canary after destination authorization is revoked", async () => {
-    const h = wildcardReplayAuthorizationFixture();
+    const h = studentReplayFixture();
     h.route.metaReportingAccountId = "account-1";
     h.accounts[0].allowedDestinations = [];
     await expect(
-      h.replay.authorizeReplay(
-        "connection",
-        "fixture",
-        "canary_1",
-        "channel",
-        { id: "owner", role: "platform_owner" },
-        null,
-      ),
+      h.authorize(),
     ).rejects.toThrow(
       "Nenhum evento possui rota completa e payload disponivel",
     );
@@ -73,19 +52,12 @@ describe("wildcard CTWA dispatch and retained history", () => {
   });
 
   it("rejects a canary when the duplicate insert claims no event", async () => {
-    const h = wildcardReplayAuthorizationFixture();
+    const h = studentReplayFixture();
     h.prisma.inboundWebhookReplayItem.createMany.mockResolvedValue({
       count: 0,
     });
     await expect(
-      h.replay.authorizeReplay(
-        "connection",
-        "fixture",
-        "canary_1",
-        "channel",
-        { id: "owner", role: "platform_owner" },
-        null,
-      ),
+      h.authorize(),
     ).rejects.toThrow("Os eventos elegiveis ja pertencem a outro replay");
     expect(h.replayQueue.enqueueBatch).not.toHaveBeenCalled();
   });
@@ -120,13 +92,12 @@ describe("wildcard CTWA dispatch and retained history", () => {
     },
   );
 
-  it("accepts retained pre-activation CTWA in the existing replay worker, once", async () => {
-    const h = wildcardDispatchFixture();
-    h.delivery.firstReceivedAt = new Date(Date.now() - 120_000);
-    // Exercise the existing worker item boundary; no new student endpoint.
-    await (h.replay as any).processItem("batch", "ws", "item");
-    expect(h.item.status).toBe("materialized");
-    await (h.replay as any).processItem("batch", "ws", "item");
+  it("accepts explicitly authorized retained pre-activation CTWA in the existing replay worker, once", async () => {
+    const h = studentReplayFixture();
+    const batch = await h.authorize();
+    await h.replay.processBatch({ workspaceId: "ws", batchId: batch.batchId });
+    expect(h.items[0].status).toBe("materialized");
+    await h.replay.processBatch({ workspaceId: "ws", batchId: batch.batchId });
     expect(h.conversions.recordExternalConversion).toHaveBeenCalledTimes(1);
   });
 
@@ -169,7 +140,8 @@ describe("wildcard CTWA dispatch and retained history", () => {
   it.each(["production", "replay"])(
     "%s refuses revoked authorization even with a retained resolved event",
     async (mode) => {
-      const h = wildcardDispatchFixture();
+      const h = mode === "replay" ? studentReplayFixture() : { ...wildcardDispatchFixture(), authorize: async () => ({ batchId: "unused" }), items: [] as any[] };
+      const approved = await h.authorize();
       h.route.metaReportingAccountId = "account-1";
       h.accounts[0].allowedDestinations = [];
       if (mode === "replay")
@@ -184,8 +156,8 @@ describe("wildcard CTWA dispatch and retained history", () => {
           code: "inbound_webhook_production_route_invalid",
         });
       else {
-        await (h.replay as any).processItem("batch", "ws", "item");
-        expect(h.item.errorCode).toBe("inbound_webhook_replay_route_invalid");
+        await h.replay.processBatch({ workspaceId: "ws", batchId: approved.batchId });
+        expect(h.items[0].errorCode).toBe("inbound_webhook_replay_route_invalid");
       }
       expect(h.leads.upsertFromWhatsappWebhook).not.toHaveBeenCalled();
       expect(h.conversionQueue.enqueueSend).not.toHaveBeenCalled();
@@ -215,17 +187,11 @@ describe("wildcard CTWA dispatch and retained history", () => {
   });
 
   it("keeps the student replay flag disabled and its authorization closed", async () => {
-    const h = wildcardDispatchFixture();
+    const h = studentReplayFixture();
+    const preview = await h.preview();
     h.env.INBOUND_WEBHOOK_REPLAY_ENABLED = "false";
     await expect(
-      h.replay.authorizeReplay(
-        "connection",
-        "fixture",
-        "canary_1",
-        "channel",
-        { id: "owner", role: "platform_owner" },
-        null,
-      ),
+      h.authorize("canary_1", preview.previewToken!),
     ).rejects.toThrow("Replay controlado desativado neste ambiente");
     expect(h.leads.upsertFromWhatsappWebhook).not.toHaveBeenCalled();
   });
@@ -288,7 +254,7 @@ describe("wildcard CTWA dispatch and retained history", () => {
           h.route.metaReportingAccountId = "account-2";
         if (reason === "route other tenant") h.route.workspaceId = "other";
         if (reason === "parser observation")
-          h.connection.parserRelease.status = "observation_only";
+          { h.connection.parserRelease.status = "observation_only"; h.connection.parserRelease.version = "v2"; }
         if (reason === "parser retired")
           h.connection.parserRelease.status = "retired";
         if (reason === "payload expired")
@@ -313,8 +279,8 @@ describe("wildcard CTWA dispatch and retained history", () => {
 
   it("reuses the same conversion dedupe identity across live and historical workers", async () => {
     const live = wildcardDispatchFixture();
-    const historical = wildcardDispatchFixture();
-    historical.delivery.firstReceivedAt = new Date(Date.now() - 120_000);
+    const historical = studentReplayFixture();
+    const approved = await historical.authorize();
     historical.conversions.recordExternalConversion.mockResolvedValue({
       status: "duplicate",
       conversionEventLogId: "conversion",
@@ -324,8 +290,8 @@ describe("wildcard CTWA dispatch and retained history", () => {
       workspaceId: "ws",
       productionItemId: "item",
     });
-    await (historical.replay as any).processItem("batch", "ws", "item");
-    expect(historical.item.status).toBe("duplicate");
+    await historical.replay.processBatch({ workspaceId: "ws", batchId: approved.batchId });
+    expect(historical.items[0].status).toBe("duplicate");
     expect(
       historical.conversions.recordExternalConversion.mock.calls[0][0],
     ).toMatchObject({

@@ -164,10 +164,14 @@ canal é diferente:
 Uma rota pode usar **qualquer conta do BM**, sem criar uma rota por conta;
 cada anúncio ainda precisa resolver uma conta autorizada ao destino no mesmo
 workspace. **Rota pronta** não certifica o parser nem liga produção, e ativar
-não envia CTWA antigos automaticamente. O template ainda não expõe ao
-proprietário a certificação/replay de Meta Cloud: veja [requisitos e limites
-de recuperação](setup/whatsapp-providers.md#rota-com-qualquer-conta-do-bm-e-ativação-do-meta-cloud)
-antes de tentar ativar envios.
+não envia CTWA antigos automaticamente. A integração nativa
+**meta_cloud/v1** já validada permite ativação humana
+sem primeira CTWA ou certificação privada por instalação, inclusive com
+`observation_only` antigo. Versões desconhecidas ou retiradas ficam
+bloqueadas. Como owner, use **Recuperar CTWAs anteriores** no canal para
+prévia, confirmação e envio de um teste real, antes dos demais. Replay
+continua desligado por padrão e exige habilitação explícita do operador.
+Veja o [guia de produção e recuperação](setup/meta-cloud-recovery.md).
 
 **O que já funciona:** atribuição de **CTWA** — o produto lê `referral.ctwa_clid` e `referral.source_id` (ID do anúncio) das mensagens recebidas e gera lead/conversão a partir delas.
 

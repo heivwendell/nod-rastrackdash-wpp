@@ -9,7 +9,12 @@ const locked = {
   reason: "revoked",
   state: { status: "blocked" },
 };
-const allowed = { inert: false, locked: false, reason: null, state: { status: "active" } };
+const allowed = {
+  inert: false,
+  locked: false,
+  reason: null,
+  state: { status: "active" },
+};
 
 const resolver = {
   hasNormalizedConnections: vi.fn(async () => true),
@@ -33,7 +38,9 @@ describe("Kommo background license boundary", () => {
     h.queue.enqueue.mockClear();
     h.setLicense(locked);
 
-    await expect(h.service.process(event.id, event.workspaceId)).resolves.toEqual({
+    await expect(
+      h.service.process(event.id, event.workspaceId),
+    ).resolves.toEqual({
       status: before.status,
       errorCode: "license_locked",
     });
@@ -50,14 +57,21 @@ describe("Kommo background license boundary", () => {
     h.adapter.getLead.mockImplementationOnce(async () => {
       entered.resolve();
       await resume.promise;
-      return { id: "deal-a", accountId: "account-a", contactIds: ["contact-a"] };
+      return {
+        id: "deal-a",
+        accountId: "account-a",
+        contactIds: ["contact-a"],
+      };
     });
     const processing = h.service.process(event.id, event.workspaceId);
     await entered.promise;
     h.setLicense(locked);
     resume.resolve();
 
-    await expect(processing).resolves.toEqual({ status: "queued", errorCode: "license_locked" });
+    await expect(processing).resolves.toEqual({
+      status: "queued",
+      errorCode: "license_locked",
+    });
     expect(h.state.conversionEventLog).toHaveLength(0);
     expect(h.state.kommoWebhookEvent[0]).toMatchObject({
       status: "queued",
@@ -71,19 +85,25 @@ describe("Kommo background license boundary", () => {
     const event = await h.receive();
     const entered = deferred();
     const resume = deferred();
-    const original = h.prisma.kommoConversionDedupe.findUnique.getMockImplementation();
-    h.prisma.kommoConversionDedupe.findUnique.mockImplementationOnce(async (args: any) => {
-      entered.resolve();
-      await resume.promise;
-      return original(args);
-    });
+    const original =
+      h.prisma.kommoConversionDedupe.findUnique.getMockImplementation();
+    h.prisma.kommoConversionDedupe.findUnique.mockImplementationOnce(
+      async (args: any) => {
+        entered.resolve();
+        await resume.promise;
+        return original(args);
+      },
+    );
 
     const processing = h.service.process(event.id, event.workspaceId);
     await entered.promise;
     h.setLicense(locked);
     resume.resolve();
 
-    await expect(processing).resolves.toEqual({ status: "queued", errorCode: "license_locked" });
+    await expect(processing).resolves.toEqual({
+      status: "queued",
+      errorCode: "license_locked",
+    });
     expect(h.state.kommoConversionDedupe).toHaveLength(0);
     expect(h.state.conversionEventLog).toHaveLength(0);
     expect(h.state.kommoWebhookEvent[0]).toMatchObject({
@@ -99,18 +119,23 @@ describe("Kommo background license boundary", () => {
     const entered = deferred();
     const resume = deferred();
     const original = h.prisma.conversionEventLog.count.getMockImplementation();
-    h.prisma.conversionEventLog.count.mockImplementationOnce(async (args: any) => {
-      entered.resolve();
-      await resume.promise;
-      return original(args);
-    });
+    h.prisma.conversionEventLog.count.mockImplementationOnce(
+      async (args: any) => {
+        entered.resolve();
+        await resume.promise;
+        return original(args);
+      },
+    );
 
     const processing = h.service.process(event.id, event.workspaceId);
     await entered.promise;
     h.setLicense(locked);
     resume.resolve();
 
-    await expect(processing).resolves.toEqual({ status: "queued", errorCode: "license_locked" });
+    await expect(processing).resolves.toEqual({
+      status: "queued",
+      errorCode: "license_locked",
+    });
     expect(h.state.kommoConversionDedupe).toHaveLength(0);
     expect(h.state.conversionEventLog).toHaveLength(0);
   });
@@ -123,18 +148,25 @@ describe("Kommo background license boundary", () => {
     const entered = deferred();
     const resume = deferred();
     const original = h.prisma.conversionEventLog.count.getMockImplementation();
-    h.prisma.conversionEventLog.count.mockImplementationOnce(async (args: any) => {
-      entered.resolve();
-      await resume.promise;
-      return original(args);
-    });
+    h.prisma.conversionEventLog.count.mockImplementationOnce(
+      async (args: any) => {
+        entered.resolve();
+        await resume.promise;
+        return original(args);
+      },
+    );
 
     const processing = h.service.process(event.id, event.workspaceId);
     await entered.promise;
-    h.license.getLockState.mockRejectedValueOnce(new Error("late license lookup unavailable"));
+    h.license.getLockState.mockRejectedValueOnce(
+      new Error("late license lookup unavailable"),
+    );
     resume.resolve();
 
-    await expect(processing).resolves.toEqual({ status: "queued", errorCode: "license_locked" });
+    await expect(processing).resolves.toEqual({
+      status: "queued",
+      errorCode: "license_locked",
+    });
     expect(h.state.kommoConversionDedupe).toHaveLength(0);
     expect(h.state.conversionEventLog).toHaveLength(0);
   });
@@ -145,12 +177,14 @@ describe("Kommo background license boundary", () => {
     const entered = deferred();
     const resume = deferred();
     const original = h.prisma.conversionEventLog.create.getMockImplementation();
-    h.prisma.conversionEventLog.create.mockImplementationOnce(async (args: any) => {
-      const log = await original(args);
-      entered.resolve();
-      await resume.promise;
-      return log;
-    });
+    h.prisma.conversionEventLog.create.mockImplementationOnce(
+      async (args: any) => {
+        const log = await original(args);
+        entered.resolve();
+        await resume.promise;
+        return log;
+      },
+    );
 
     const processing = h.service.process(event.id, event.workspaceId);
     await entered.promise;
@@ -159,7 +193,10 @@ describe("Kommo background license boundary", () => {
     h.setLicense(locked);
     resume.resolve();
 
-    await expect(processing).resolves.toEqual({ status: "queued", errorCode: "license_locked" });
+    await expect(processing).resolves.toEqual({
+      status: "queued",
+      errorCode: "license_locked",
+    });
     expect(h.state.kommoConversionDedupe).toHaveLength(0);
     expect(h.state.conversionEventLog).toHaveLength(0);
   });
@@ -167,24 +204,37 @@ describe("Kommo background license boundary", () => {
   it("fails closed on license lookup failure and resumes the same durable intent once allowed", async () => {
     const h = kommoHarness();
     const event = await h.receive();
-    h.license.getLockState.mockRejectedValueOnce(new Error("license lookup unavailable"));
-    await expect(h.service.process(event.id, event.workspaceId)).resolves.toMatchObject({
+    h.license.getLockState.mockRejectedValueOnce(
+      new Error("license lookup unavailable"),
+    );
+    await expect(
+      h.service.process(event.id, event.workspaceId),
+    ).resolves.toMatchObject({
       status: "queued",
       errorCode: "license_locked",
     });
     expect(h.state.conversionEventLog).toHaveLength(0);
 
     h.setLicense(allowed);
-    await expect(h.service.process(event.id, event.workspaceId)).resolves.toMatchObject({ status: "queued" });
+    await expect(
+      h.service.process(event.id, event.workspaceId),
+    ).resolves.toMatchObject({ status: "queued" });
     expect(h.state.conversionEventLog).toHaveLength(1);
   });
 
   it("permits work only when the canonical service explicitly declares licensing inert", async () => {
     const h = kommoHarness();
     const event = await h.receive();
-    h.setLicense({ inert: true, locked: true, reason: "revoked", state: { status: "blocked" } });
+    h.setLicense({
+      inert: true,
+      locked: true,
+      reason: "revoked",
+      state: { status: "blocked" },
+    });
 
-    await expect(h.service.process(event.id, event.workspaceId)).resolves.toMatchObject({ status: "queued" });
+    await expect(
+      h.service.process(event.id, event.workspaceId),
+    ).resolves.toMatchObject({ status: "queued" });
     expect(h.state.conversionEventLog).toHaveLength(1);
   });
 
@@ -194,7 +244,9 @@ describe("Kommo background license boundary", () => {
     h.queue.enqueue.mockClear();
     h.setLicense(locked);
 
-    await expect((h.service as any).reconcileRecoverableEvents()).resolves.toBe(0);
+    await expect((h.service as any).reconcileRecoverableEvents()).resolves.toBe(
+      0,
+    );
     expect(h.queue.enqueue).not.toHaveBeenCalled();
   });
 
@@ -205,12 +257,15 @@ describe("Kommo background license boundary", () => {
     h.queue.enqueue.mockClear();
     const entered = deferred();
     const resume = deferred();
-    const original = h.prisma.conversionEventLog.findFirst.getMockImplementation();
-    h.prisma.conversionEventLog.findFirst.mockImplementationOnce(async (args: any) => {
-      entered.resolve();
-      await resume.promise;
-      return original(args);
-    });
+    const original =
+      h.prisma.conversionEventLog.findFirst.getMockImplementation();
+    h.prisma.conversionEventLog.findFirst.mockImplementationOnce(
+      async (args: any) => {
+        entered.resolve();
+        await resume.promise;
+        return original(args);
+      },
+    );
 
     const recovering = h.service.recover(
       event.workspaceId,
@@ -229,12 +284,14 @@ describe("Kommo background license boundary", () => {
     });
 
     h.setLicense(allowed);
-    await expect(h.service.recover(
-      event.workspaceId,
-      h.connection.id,
-      "operator-a",
-      "platform_admin",
-    )).resolves.toMatchObject({ queued: expect.any(Number) });
+    await expect(
+      h.service.recover(
+        event.workspaceId,
+        h.connection.id,
+        "operator-a",
+        "platform_admin",
+      ),
+    ).resolves.toMatchObject({ queued: expect.any(Number) });
     expect(h.queue.enqueue).toHaveBeenCalled();
   });
 
@@ -242,7 +299,17 @@ describe("Kommo background license boundary", () => {
     const h = kommoHarness();
     const event = await h.receive();
     await h.service.process(event.id, event.workspaceId);
-    const fetcher = vi.fn(async () => new Response("{}", { status: 200 }));
+    const fetcher = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            events_received: 1,
+            messages: [],
+            fbtrace_id: "synthetic-trace",
+          }),
+          { status: 200 },
+        ),
+    );
     const sender = new ConversionEventsService(
       h.prisma,
       new MetaCapiAdapter({}, fetcher as any),
@@ -250,16 +317,21 @@ describe("Kommo background license boundary", () => {
       resolver as any,
       h.license as any,
     );
-    h.license.getLockState.mockReset()
+    h.license.getLockState
+      .mockReset()
       .mockResolvedValueOnce(allowed)
       .mockResolvedValueOnce(allowed)
       .mockResolvedValueOnce(locked);
 
-    await expect(sender.sendReadyEvent(h.state.conversionEventLog[0].id, {
-      workspaceId: "workspace-a",
-    })).resolves.toMatchObject({ status: "skipped" });
+    await expect(
+      sender.sendReadyEvent(h.state.conversionEventLog[0].id, {
+        workspaceId: "workspace-a",
+      }),
+    ).resolves.toMatchObject({ status: "skipped" });
     expect(fetcher).not.toHaveBeenCalled();
-    expect(h.state.conversionEventLog[0]).toMatchObject({ status: "ready_to_send" });
+    expect(h.state.conversionEventLog[0]).toMatchObject({
+      status: "ready_to_send",
+    });
     expect(h.state.kommoConversionDedupe[0]).toMatchObject({
       senderAttempts: 0,
       senderLeaseToken: null,
@@ -280,8 +352,9 @@ describe("Kommo background license boundary", () => {
     log.errorCode = "MetaCapiDeliveryUnknown";
 
     h.setLicense(allowed);
-    await expect(h.conversions.prepareKommoSenderRetry(log.id, "workspace-a"))
-      .resolves.toBe("delivery_unknown");
+    await expect(
+      h.conversions.prepareKommoSenderRetry(log.id, "workspace-a"),
+    ).resolves.toBe("delivery_unknown");
     expect(intent).toMatchObject({
       publicationStatus: "delivery_unknown",
       senderLeaseToken: "unproven-dispatch",

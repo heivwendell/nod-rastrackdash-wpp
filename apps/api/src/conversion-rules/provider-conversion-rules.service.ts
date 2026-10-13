@@ -1,3 +1,4 @@
+import { effectiveInboundParserStatus } from "../inbound-webhooks/inbound-webhook-parser-eligibility";
 import { createHash, randomBytes } from "node:crypto";
 import {
   BadRequestException,
@@ -356,7 +357,7 @@ export class ProviderConversionRulesService {
         );
       }
 
-      this.assertModeAllowed(input.mode, parserRelease.status);
+      this.assertModeAllowed(input.mode, effectiveInboundParserStatus(parserRelease));
       let defaultValueCents: number | null = null;
       let defaultCurrency: string | null = null;
       let defaultContentName: string | null = null;
@@ -658,7 +659,7 @@ export class ProviderConversionRulesService {
 
       const nextMode = input.active === false ? "observation" : input.mode;
       if (nextMode === "production") {
-        this.assertModeAllowed("production", current.parserRelease.status);
+        this.assertModeAllowed("production", effectiveInboundParserStatus(current.parserRelease));
       }
 
       const conversionRuleData: Prisma.ConversionRuleUpdateInput = {};
@@ -1058,6 +1059,7 @@ export class ProviderConversionRulesService {
       actorUserId,
       requireValidMetaRoute,
       seats,
+      env: this.env,
     });
   }
 

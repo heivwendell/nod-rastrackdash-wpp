@@ -1505,6 +1505,7 @@ export default async function IntegrationsPage({
           (inboundWebhookData.capabilities.enabled ||
             inboundWebhookData.connections.length > 0) ? (
             <InboundWebhookPanel
+              canRecover={Boolean(workspace?.role === "owner" && workspace?.accessMode === "member")}
               capabilities={inboundWebhookData.capabilities}
               connections={inboundWebhookData.connections}
               providerRules={inboundWebhookData.providerRules}

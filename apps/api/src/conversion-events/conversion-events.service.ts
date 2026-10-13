@@ -22,6 +22,12 @@ import {
   KOMMO_DISPATCH_TRANSACTION_MS,
   KOMMO_NETWORK_MS,
 } from "./kommo-dispatch-coordination";
+import {
+  lockInboundMetaDispatch,
+  INBOUND_DISPATCH_START_MS,
+  INBOUND_DISPATCH_TRANSACTION_MS,
+  INBOUND_NETWORK_MS,
+} from "./inbound-meta-dispatch-coordination";
 import type {
   ConversionValueSourceDto,
   ConversionEventCustomDataDto,
@@ -41,6 +47,18 @@ import {
   type MetaCapiSendEventErrorCode,
 } from "./meta-capi.adapter";
 import { LicenseClientService } from "../licensing-client/license-client.service";
+import { RUNTIME_ENV, type RuntimeEnv } from "../common/runtime/runtime.module";
+import { parseInboundWebhooksConfig } from "../config/deployment-config";
+import {
+  assertMetaCloudSigningConfigured,
+  inboundParserProductionEligible,
+} from "../inbound-webhooks/inbound-webhook-parser-eligibility";
+import { InboundWebhookMetaRouteReaderService } from "../inbound-webhooks/inbound-webhook-meta-route-reader.service";
+import { inboundMetaRouteMatches } from "../inbound-webhooks/inbound-webhook-meta-route-eligibility";
+import {
+  replayContextHash,
+  studentBatchAuthorizationValid,
+} from "../inbound-webhook-replay/student-replay-context";
 import {
   isConversionEventRequiringValue,
   isSupportedConversionEventName,
@@ -236,19 +254,198 @@ export class ConversionEventsService {
     @Inject(MetaCapiAdapter) private readonly metaCapiAdapter: MetaCapiAdapter,
     private readonly metaTokenEncryption: MetaTokenEncryptionService,
     @Optional()
-    private readonly connectionResolver: MetaConnectionResolverService | undefined,
+    private readonly connectionResolver:
+      MetaConnectionResolverService | undefined,
     @Inject(LicenseClientService)
     private readonly licenseClient: LicenseClientService,
+    @Inject(RUNTIME_ENV) private readonly env: RuntimeEnv = process.env,
   ) {}
+
+  private async inboundMetaDispatchAuthorized(
+    client: Prisma.TransactionClient,
+    log: ConversionEventLogRecord,
+  ): Promise<boolean> {
+    if (!log.workspaceId || !(await this.kommoLicenseAllows(client)))
+      return false;
+    const config = parseInboundWebhooksConfig(this.env);
+    if (!config.enabled) return false;
+    try {
+      assertMetaCloudSigningConfigured("meta_cloud", this.env);
+    } catch {
+      return false;
+    }
+    const source = log.sourcePayload as { inboundEventId?: string } | null;
+    if (!source?.inboundEventId) return false;
+    const event = await client.inboundWebhookEvent.findFirst({
+      where: { id: source.inboundEventId, workspaceId: log.workspaceId },
+      include: {
+        delivery: true,
+        connection: { include: { parserRelease: true } },
+        channel: {
+          include: {
+            routes: { where: { active: true, validationStatus: "valid" } },
+          },
+        },
+        replayItem: true,
+      },
+    });
+    if (
+      !event ||
+      event.provider !== "meta_cloud" ||
+      event.connection.provider !== "meta_cloud" ||
+      event.connection.workspaceId !== log.workspaceId ||
+      event.channel.workspaceId !== log.workspaceId ||
+      event.channel.connectionId !== event.connectionId ||
+      event.delivery.provider !== event.provider ||
+      event.delivery.workspaceId !== log.workspaceId ||
+      event.delivery.connectionId !== event.connectionId ||
+      event.delivery.parserVersion !== event.connection.parserRelease.version ||
+      event.connection.parserRelease.provider !== "meta_cloud" ||
+      !inboundParserProductionEligible(event.connection.parserRelease) ||
+      event.connection.removedAt ||
+      event.channel.status !== "active" ||
+      !event.hasCtwa ||
+      event.classification !== "eligible_route_resolved" ||
+      event.adId !== log.adId ||
+      event.occurredAt.getTime() !== log.eventOccurredAt.getTime() ||
+      event.resolvedBusinessConnectionId !== log.metaBusinessConnectionId ||
+      event.resolvedConversionDestinationId !==
+        log.metaConversionDestinationId ||
+      log.dedupeKey !==
+        `inbound-webhook:${event.connectionId}:${event.dedupeKey}` ||
+      event.occurredAt.getTime() < Date.now() - 7 * 86400_000 ||
+      event.occurredAt.getTime() > Date.now()
+    )
+      return false;
+    if (event.replayItem) {
+      if (
+        !config.replayEnabled ||
+        event.delivery.payloadExpiresAt <= new Date() ||
+        !event.delivery.encryptedPayload ||
+        !(await studentBatchAuthorizationValid(
+          client,
+          log.workspaceId,
+          event.replayItem.batchId,
+          event.id,
+        ))
+      )
+        return false;
+    } else if (
+      !config.productionEnabled ||
+      event.connection.status !== "production" ||
+      !event.connection.productionActivatedAt ||
+      !event.channel.productionActivatedAt ||
+      event.delivery.firstReceivedAt < event.connection.productionActivatedAt ||
+      event.delivery.firstReceivedAt < event.channel.productionActivatedAt
+    )
+      return false;
+    const resolved = {
+      businessConnectionId: event.resolvedBusinessConnectionId,
+      reportingAccountId: event.resolvedReportingAccountId,
+      conversionDestinationId: event.resolvedConversionDestinationId,
+    };
+    if (
+      event.channel.routes.filter(
+        (r) =>
+          r.workspaceId === log.workspaceId &&
+          r.active &&
+          r.validationStatus === "valid" &&
+          inboundMetaRouteMatches(r, resolved),
+      ).length !== 1
+    )
+      return false;
+    const route = await new InboundWebhookMetaRouteReaderService(
+      client,
+    ).previewRoute({
+      workspaceId: log.workspaceId,
+      adId: log.adId!,
+      ...resolved,
+    });
+    return (
+      route.status === "resolved" &&
+      route.businessConnectionId === log.metaBusinessConnectionId &&
+      route.conversionDestinationId === log.metaConversionDestinationId &&
+      route.adAccountId === log.metaAccountId
+    );
+  }
+
+  private inboundDispatchIdentity(log: ConversionEventLogRecord): string {
+    return replayContextHash({
+      workspaceId: log.workspaceId,
+      eventId: log.eventId,
+      dedupeKey: log.dedupeKey,
+      sourceTrigger: log.sourceTrigger,
+      sourcePayload: log.sourcePayload,
+      adId: log.adId,
+      ctwaClid: log.ctwaClid,
+      phoneHash: log.phoneHash,
+      eventOccurredAt: log.eventOccurredAt,
+      metaAccountId: log.metaAccountId,
+      businessId: log.metaBusinessConnectionId,
+      destinationId: log.metaConversionDestinationId,
+    });
+  }
+
+  private async claimInboundMetaDispatch(
+    log: ConversionEventLogRecord,
+  ): Promise<boolean> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        // Match final dispatch order. The claim insert itself needs the workspace
+        // FK lock; taking it after the log can deadlock with a concurrent sender.
+        await tx.$queryRaw`SELECT "id" FROM "Workspace" WHERE "id" = ${log.workspaceId} FOR UPDATE`;
+        await tx.$queryRaw`SELECT "id" FROM "ConversionEventLog" WHERE "id" = ${log.id} AND "workspaceId" = ${log.workspaceId} FOR UPDATE`;
+        const current = await tx.conversionEventLog.findFirst({
+          where: {
+            id: log.id,
+            workspaceId: log.workspaceId,
+            status: "ready_to_send",
+          },
+        });
+        if (
+          !current ||
+          this.inboundDispatchIdentity(current as ConversionEventLogRecord) !==
+            this.inboundDispatchIdentity(log) ||
+          !(await this.inboundMetaDispatchAuthorized(tx, log))
+        )
+          return false;
+        // Existing AuditLog primary key supplies a permanent one-dispatch fence.
+        // Crashes/timeouts never clear this claim or consume another attempt.
+        await tx.auditLog.create({
+          data: {
+            id: `inbound-meta-dispatch:${log.id}`,
+            workspaceId: log.workspaceId,
+            actorType: "system",
+            action: "inbound_webhook.dispatch.claim",
+            targetType: "ConversionEventLog",
+            targetId: log.id,
+            resultStatus: "dispatch_started",
+          },
+        });
+        return true;
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      )
+        return false;
+      throw error;
+    }
+  }
 
   /**
    * Kommo's background path has no HTTP guard. Use the canonical decision on
    * every side-effect boundary and deliberately fail closed if it cannot be
    * read. Inert is allowed only when the license service itself says so.
    */
-  private async kommoLicenseAllows(): Promise<boolean> {
+  private async kommoLicenseAllows(
+    client?: Prisma.TransactionClient,
+  ): Promise<boolean> {
     try {
-      const decision = await this.licenseClient.getLockState();
+      const decision = client
+        ? await this.licenseClient.getLockState(client)
+        : await this.licenseClient.getLockState();
       return decision.inert || !decision.locked;
     } catch {
       return false;
@@ -766,7 +963,10 @@ export class ConversionEventsService {
       throw new NotFoundException("Evento de conversao nao encontrado");
     }
 
-    if (log?.sourceTrigger === "kommo_stage" && !(await this.kommoLicenseAllows())) {
+    if (
+      log?.sourceTrigger === "kommo_stage" &&
+      !(await this.kommoLicenseAllows())
+    ) {
       return {
         conversionEventLogId: log.id,
         workspaceId: log.workspaceId,
@@ -804,6 +1004,20 @@ export class ConversionEventsService {
         },
       });
 
+      return {
+        conversionEventLogId: log.id,
+        workspaceId: log.workspaceId,
+        status: "skipped",
+      };
+    }
+
+    if (
+      log.sourceTrigger === "inbound_webhook:meta_cloud" &&
+      (await this.prisma.auditLog.findFirst({
+        where: { id: `inbound-meta-dispatch:${log.id}` },
+        select: { id: true },
+      }))
+    ) {
       return {
         conversionEventLogId: log.id,
         workspaceId: log.workspaceId,
@@ -888,7 +1102,7 @@ export class ConversionEventsService {
           errorMessage: resolvedDestination.routeError,
           errorCode: "MissingMetaDestination" as const,
         }
-      : kommoIntent
+      : kommoIntent || log.sourceTrigger === "inbound_webhook:meta_cloud"
         ? preflightMetaCapiEvent(adapterInput)
         : null;
     // Rejected configuration does not consume the one durable dispatch attempt.
@@ -902,59 +1116,143 @@ export class ConversionEventsService {
         workspaceId: log.workspaceId,
         status: "skipped",
       };
+    const inboundClaim =
+      log.sourceTrigger === "inbound_webhook:meta_cloud" && !preflight;
+    if (inboundClaim && !(await this.claimInboundMetaDispatch(log)))
+      return {
+        conversionEventLogId: log.id,
+        workspaceId: log.workspaceId,
+        status: "skipped",
+      };
     // The durable claim is separate and never expires, including on failure
     // here. An ordinary post-claim read would still leave a TOCTOU window.
     const dispatchKommo = async () => {
       const deadline = performance.now() + KOMMO_DISPATCH_START_MS;
-      const started = await this.prisma.$transaction(async (tx) => {
-        await lockKommoDispatch(tx, log.workspaceId!);
-        await tx.$queryRaw`SELECT "id" FROM "KommoConnection" WHERE "id" = ${kommoIntent!.connectionId} AND "workspaceId" = ${log.workspaceId!} FOR UPDATE`;
-        const owned = await tx.kommoConversionDedupe.findFirst({
-          where: {
-            workspaceId: log.workspaceId!,
-            conversionEventLogId: log.id,
-            senderLeaseToken: senderToken,
-            senderAttempts: 1,
-            senderRetryable: false,
-            publicationStatus: { not: "delivery_unknown" },
-          },
-        });
-        const current = await tx.conversionEventLog.findFirst({
-          where: {
-            id: log.id,
-            workspaceId: log.workspaceId!,
-            sourceTrigger: "kommo_stage",
-            status: "ready_to_send",
-            eventId,
-          },
-        });
-        if (
-          !owned || !current ||
-          !Object.entries(kommoIntent!).every(([key, value]) =>
-            (owned.publicationIntent as Record<string, unknown> | null)?.[key] === value,
-          ) ||
-          !(await kommoPublicationAuthorized(tx, log.workspaceId!, kommoIntent!))
-        ) throw new Error("kommo_dispatch_revoked");
-        // This is the final authorization point before synchronous provider
-        // dispatch. It catches a lock acquired after the durable sender claim.
-        if (!(await this.kommoLicenseAllows()))
-          throw new Error("kommo_license_locked");
-        // sendEvent invokes fetch synchronously before its first await. Return
-        // a holder rather than the promise: commit/release without awaiting
-        // network I/O. The provider start is the dispatch linearization point.
-        const delivery = this.metaCapiAdapter.sendEvent(adapterInput, {
-          beforeDispatch: () => {
-            if (performance.now() >= deadline)
-              throw new Error("kommo_dispatch_deadline");
-          },
-          signal: AbortSignal.timeout(KOMMO_NETWORK_MS),
-        });
-        // Observe rejection even if commit fails after dispatch. The original
-        // promise is still awaited on success; the durable claim stays fenced.
-        void delivery.catch(() => undefined);
-        return { delivery };
-      }, { maxWait: KOMMO_DISPATCH_START_MS, timeout: KOMMO_DISPATCH_TRANSACTION_MS });
+      const started = await this.prisma.$transaction(
+        async (tx) => {
+          await lockKommoDispatch(tx, log.workspaceId!);
+          await tx.$queryRaw`SELECT "id" FROM "KommoConnection" WHERE "id" = ${kommoIntent!.connectionId} AND "workspaceId" = ${log.workspaceId!} FOR UPDATE`;
+          const owned = await tx.kommoConversionDedupe.findFirst({
+            where: {
+              workspaceId: log.workspaceId!,
+              conversionEventLogId: log.id,
+              senderLeaseToken: senderToken,
+              senderAttempts: 1,
+              senderRetryable: false,
+              publicationStatus: { not: "delivery_unknown" },
+            },
+          });
+          const current = await tx.conversionEventLog.findFirst({
+            where: {
+              id: log.id,
+              workspaceId: log.workspaceId!,
+              sourceTrigger: "kommo_stage",
+              status: "ready_to_send",
+              eventId,
+            },
+          });
+          if (
+            !owned ||
+            !current ||
+            !Object.entries(kommoIntent!).every(
+              ([key, value]) =>
+                (owned.publicationIntent as Record<string, unknown> | null)?.[
+                  key
+                ] === value,
+            ) ||
+            !(await kommoPublicationAuthorized(
+              tx,
+              log.workspaceId!,
+              kommoIntent!,
+            ))
+          )
+            throw new Error("kommo_dispatch_revoked");
+          // This is the final authorization point before synchronous provider
+          // dispatch. It catches a lock acquired after the durable sender claim.
+          if (!(await this.kommoLicenseAllows()))
+            throw new Error("kommo_license_locked");
+          // sendEvent invokes fetch synchronously before its first await. Return
+          // a holder rather than the promise: commit/release without awaiting
+          // network I/O. The provider start is the dispatch linearization point.
+          const delivery = this.metaCapiAdapter.sendEvent(adapterInput, {
+            beforeDispatch: () => {
+              if (performance.now() >= deadline)
+                throw new Error("kommo_dispatch_deadline");
+            },
+            signal: AbortSignal.timeout(KOMMO_NETWORK_MS),
+          });
+          // Observe rejection even if commit fails after dispatch. The original
+          // promise is still awaited on success; the durable claim stays fenced.
+          void delivery.catch(() => undefined);
+          return { delivery };
+        },
+        {
+          maxWait: KOMMO_DISPATCH_START_MS,
+          timeout: KOMMO_DISPATCH_TRANSACTION_MS,
+        },
+      );
       return started.delivery;
+    };
+    const dispatchInbound = async () => {
+      const source = log.sourcePayload as { inboundEventId?: string } | null;
+      if (!source?.inboundEventId || !log.workspaceId) return null;
+      const deadline = performance.now() + INBOUND_DISPATCH_START_MS;
+      const started = await this.prisma.$transaction(
+        async (tx) => {
+          await lockInboundMetaDispatch(
+            tx,
+            log.workspaceId!,
+            log.id,
+            source.inboundEventId!,
+          );
+          const current = await tx.conversionEventLog.findFirst({
+            where: {
+              id: log.id,
+              workspaceId: log.workspaceId,
+              status: "ready_to_send",
+            },
+          });
+          if (
+            !current ||
+            this.inboundDispatchIdentity(
+              current as ConversionEventLogRecord,
+            ) !== this.inboundDispatchIdentity(log)
+          )
+            return null;
+          const freshRoute = await this.resolveDeliveryRoute(log, tx);
+          if (
+            freshRoute.routeError ||
+            freshRoute.accessToken !== resolvedDestination.accessToken ||
+            freshRoute.pixelId !== resolvedDestination.pixelId ||
+            freshRoute.pageId !== resolvedDestination.pageId ||
+            freshRoute.businessConnectionId !==
+              resolvedDestination.businessConnectionId ||
+            freshRoute.conversionDestinationId !==
+              resolvedDestination.conversionDestinationId ||
+            freshRoute.reportingAccountId !==
+              resolvedDestination.reportingAccountId ||
+            !(await this.inboundMetaDispatchAuthorized(tx, log))
+          )
+            return null;
+          // All PG authorities stay locked across the last license read. Nothing
+          // asynchronous follows this final decision before synchronous fetch start.
+          if (!(await this.kommoLicenseAllows(tx))) return null;
+          const delivery = this.metaCapiAdapter.sendEvent(adapterInput, {
+            beforeDispatch: () => {
+              if (performance.now() >= deadline)
+                throw new Error("inbound_dispatch_deadline");
+            },
+            signal: AbortSignal.timeout(INBOUND_NETWORK_MS),
+          });
+          void delivery.catch(() => undefined);
+          return { delivery };
+        },
+        {
+          maxWait: INBOUND_DISPATCH_START_MS,
+          timeout: INBOUND_DISPATCH_TRANSACTION_MS,
+        },
+      );
+      return started ? started.delivery : null;
     };
     let adapterResult;
     try {
@@ -962,7 +1260,15 @@ export class ConversionEventsService {
         preflight ??
         (kommoIntent
           ? await dispatchKommo()
-          : await this.metaCapiAdapter.sendEvent(adapterInput));
+          : inboundClaim
+            ? await dispatchInbound()
+            : await this.metaCapiAdapter.sendEvent(adapterInput));
+      if (!adapterResult)
+        return {
+          conversionEventLogId: log.id,
+          workspaceId: log.workspaceId,
+          status: "skipped",
+        };
     } catch (error) {
       if (
         senderToken &&
@@ -980,7 +1286,7 @@ export class ConversionEventsService {
       throw error;
     }
     const unknownOutcome = Boolean(
-      kommoIntent &&
+      (kommoIntent || inboundClaim) &&
       (adapterResult.errorCode === "MetaCapiNetworkError" ||
         adapterResult.errorCode === "MetaCapiDeliveryUnknown"),
     );
@@ -1105,6 +1411,38 @@ export class ConversionEventsService {
           workspaceId: log.workspaceId,
           status: "skipped",
         };
+    } else if (
+      log.sourceTrigger === "inbound_webhook:meta_cloud" &&
+      preflight
+    ) {
+      // Serialize preflight failures with claims: stale failed configuration
+      // must never overwrite a claimed/sent event from a concurrent sender.
+      const written = await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "Workspace" WHERE "id" = ${log.workspaceId} FOR UPDATE`;
+        await tx.$queryRaw`SELECT "id" FROM "ConversionEventLog" WHERE "id" = ${log.id} AND "workspaceId" = ${log.workspaceId} FOR UPDATE`;
+        if (
+          await tx.auditLog.findFirst({
+            where: { id: `inbound-meta-dispatch:${log.id}` },
+            select: { id: true },
+          })
+        )
+          return false;
+        const updated = await tx.conversionEventLog.updateMany({
+          where: {
+            id: log.id,
+            workspaceId: log.workspaceId,
+            status: "ready_to_send",
+          },
+          data: deliveryData,
+        });
+        return Boolean(updated.count);
+      });
+      if (!written)
+        return {
+          conversionEventLogId: log.id,
+          workspaceId: log.workspaceId,
+          status: "skipped",
+        };
     } else {
       await this.prisma.conversionEventLog.update({
         where: { id: log.id },
@@ -1112,6 +1450,18 @@ export class ConversionEventsService {
       });
     }
     await this.syncProviderConversionDelivery(log, result);
+    if (inboundClaim)
+      await this.prisma.auditLog.update({
+        where: { id: `inbound-meta-dispatch:${log.id}` },
+        data: {
+          resultStatus:
+            result.status === "sent"
+              ? "sent"
+              : unknownOutcome
+                ? "delivery_unknown"
+                : "failed",
+        },
+      });
     if (log.workspaceId) {
       await this.prisma.purchaseReview.updateMany({
         where: {
@@ -1296,10 +1646,18 @@ export class ConversionEventsService {
 
   private async resolveDeliveryRoute(
     log: ConversionEventLogRecord,
+    client?: Prisma.TransactionClient,
   ): Promise<ResolvedConversionDestination> {
-    if (log.workspaceId && this.connectionResolver) {
+    // Final inbound resolution must use the same transaction as authority locks.
+    const resolver = client
+      ? new MetaConnectionResolverService(
+          client as PrismaService,
+          this.metaTokenEncryption,
+        )
+      : this.connectionResolver;
+    if (log.workspaceId && resolver) {
       try {
-        const route = await this.connectionResolver.resolveCapiRoute({
+        const route = await resolver.resolveCapiRoute({
           workspaceId: log.workspaceId,
           ...(log.sourceTrigger === "kommo_stage"
             ? { requireNormalized: true }

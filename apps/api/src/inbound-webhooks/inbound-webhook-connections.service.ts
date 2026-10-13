@@ -33,6 +33,7 @@ import {
   requireInboundWebhookConnection,
 } from "./inbound-webhook-production-activation";
 import { UazapiConversionBridgeService } from "./uazapi-conversion-bridge.service";
+import { effectiveInboundParserStatus } from "./inbound-webhook-parser-eligibility";
 
 const parserVersion = "v1";
 
@@ -77,7 +78,7 @@ export class InboundWebhookConnectionsService {
           return {
             provider,
             parserVersion,
-            parserReleaseStatus: release?.status ?? null,
+            parserReleaseStatus: release ? effectiveInboundParserStatus({ provider, version: parserVersion, status: release.status }) : null,
             creationEnabled:
               config.enabled === true &&
               release !== undefined &&
@@ -335,6 +336,7 @@ export class InboundWebhookConnectionsService {
         actorUserId,
         requireValidMetaRoute: metaRouteRequiredForProvider(current.provider),
         seats: this.seatHook(),
+        env: this.env,
       });
     });
 
@@ -521,7 +523,7 @@ export class InboundWebhookConnectionsService {
       provider: connection.provider,
       displayName: connection.displayName,
       parserVersion: connection.parserRelease.version,
-      parserReleaseStatus: connection.parserRelease.status,
+      parserReleaseStatus: effectiveInboundParserStatus(connection.parserRelease),
       status: connection.status,
       productionActivatedAt:
         connection.productionActivatedAt?.toISOString() ?? null,

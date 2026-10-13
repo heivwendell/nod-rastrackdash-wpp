@@ -177,6 +177,41 @@ O pedido vale por cerca de 10 minutos e só pode ser concluído uma vez. Se apar
 
 > **Para a IA que conduz o aluno:** `PALMUP_META_BROKER_URL` é pública; nunca a trate como segredo e nunca peça, nem aceite, o App Secret do app Meta da PalmUP. Só o owner vê o botão. O token do login social é resgatado e guardado pela API do aluno e nunca chega ao navegador nem ao chat.
 
+## Meta Cloud: produção e recuperação por owner
+
+Esta alteração requer API e web da mesma atualização; shared acompanha o
+build de ambos. **Backup:** confira cópia recuperável do PostgreSQL e das
+variáveis no local seguro do operador, preservando criptografia,
+auditoria e deduplicação. **Migration: não se aplica** a esta alteração.
+Revise separadamente migrations de outras mudanças incluídas na atualização.
+
+**Variáveis de ambiente:** nenhuma nova. Preserve o `.env` e
+`INBOUND_WEBHOOK_ENCRYPTION_KEY`; confira `INBOUND_WEBHOOKS_ENABLED`,
+`INBOUND_WEBHOOK_PRODUCTION_ENABLED` para novos envios, e `META_APP_SECRET`
+do próprio app Meta na API. `INBOUND_WEBHOOK_REPLAY_ENABLED` continua
+`false`; habilitar recuperação é decisão explícita do operador e exige
+reinício da API. Nunca use segredo PalmUP ou variável pública para segredos.
+
+**Preservação de customizações:** mantenha marca, footer, licença,
+integrações, arquivos locais e dados ao resolver o merge. Não reinstale nem
+recrie conexões. Reconstrua/reinicie API e atualize web no seu fluxo habitual.
+
+**Verificação:** o owner deve distinguir canal habilitado de conexão em
+produção. A versão nativa `meta_cloud/v1` aceita ativação humana inclusive
+com `observation_only` antigo; `retired` e versões desconhecidas ficam
+bloqueadas. Abra **Recuperar CTWAs anteriores** no canal e confira prévia e
+resultados sem enviar. Um envio real de teste exige confirmação humana,
+e somente `sent` com `sentAt` libera nova confirmação dos demais (até 500).
+Ativar produção não envia histórico. Consulte o
+[guia de operação e recuperação](meta-cloud-recovery.md).
+
+**Recuperação da versão anterior:** pause envios/replay antes de trocar
+API/web, preserve customizações e backups; não há migration a desfazer.
+Reversão não desfaz conversões enviadas. Versão antiga pode não respeitar o
+fence novo: não execute reenvios de eventos com tentativa consumida, nem
+apague auditoria/tentativas. PENDENTE: atualização e rollback reais não
+foram executados; a entrega foi validada com fixtures locais.
+
 ## Versão instalada
 
 O `/backoffice` mostra ao **dono da plataforma** se esta instância está na versão mais recente da `main` do template. Para isso, a API precisa saber **qual commit foi instalado** — e o build descobre isso sozinho.
