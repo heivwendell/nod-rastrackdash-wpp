@@ -39,6 +39,12 @@ const connectionStatusOperationalErrors = new Set([
   "Todo canal ativo precisa de uma rota Meta valida",
   "Workspace sem contrato com acesso ativo",
 ]);
+const channelStatusOperationalErrors = new Set([
+  "Configure uma rota Meta valida antes de ativar o canal",
+  "Controle de vagas dos canais externos indisponivel",
+  "Todas as vagas do pacote estao ocupadas",
+  "Workspace sem contrato com acesso ativo",
+]);
 
 function oneTimeSecretForProvider(input: {
   connectionId: string;
@@ -267,8 +273,11 @@ export async function setInboundWebhookChannelStatusAction(
           ? "Canal pausado. Os demais canais continuam inalterados."
           : "Canal habilitado para envio quando a conexao estiver em producao.",
     };
-  } catch {
-    return failure("Nao foi possivel alterar o status deste canal.");
+  } catch (error) {
+    return failure(
+      knownOperationalError(error, channelStatusOperationalErrors) ??
+        "Nao foi possivel alterar o status deste canal.",
+    );
   }
 }
 

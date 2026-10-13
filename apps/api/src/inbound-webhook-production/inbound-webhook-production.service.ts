@@ -36,6 +36,8 @@ import { RUNTIME_ENV, type RuntimeEnv } from "../common/runtime/runtime.module";
 import { parseInboundWebhooksConfig } from "../config/deployment-config";
 import { ConversionEventsService } from "../conversion-events/conversion-events.service";
 import { InboundWebhookPayloadEncryptionService } from "../inbound-webhooks/inbound-webhook-payload-encryption.service";
+import { inboundMetaRouteMatches } from "../inbound-webhooks/inbound-webhook-meta-route-eligibility";
+import { InboundWebhookMetaRouteReaderService } from "../inbound-webhooks/inbound-webhook-meta-route-reader.service";
 import { inboundWebhookParserContext } from "../inbound-webhooks/providers/inbound-webhook-parser";
 import type { ParsedInboundWebhookEvent } from "../inbound-webhooks/providers/inbound-webhook-parser";
 import { InboundWebhookParserRegistry } from "../inbound-webhooks/providers/inbound-webhook-parser.registry";
@@ -186,13 +188,19 @@ export class InboundWebhookProductionService {
     const business = event.resolvedBusinessConnection;
     const reporting = event.resolvedReportingAccount;
     const destination = event.resolvedConversionDestination;
-    const routeStillActive = channel.routes.some(
-      (route) =>
-        route.metaBusinessConnectionId === event.resolvedBusinessConnectionId &&
-        route.metaReportingAccountId === event.resolvedReportingAccountId &&
-        route.metaConversionDestinationId ===
-          event.resolvedConversionDestinationId,
-    );
+    const resolved = {
+      businessConnectionId: event.resolvedBusinessConnectionId,
+      reportingAccountId: event.resolvedReportingAccountId,
+      conversionDestinationId: event.resolvedConversionDestinationId,
+    };
+    const routeStillActive =
+      channel.routes.filter(
+        (route) =>
+          route.workspaceId === event.workspaceId &&
+          route.active &&
+          route.validationStatus === "valid" &&
+          inboundMetaRouteMatches(route, resolved),
+      ).length === 1;
     // Only the instance bound to this tenant-owned inbound origin is trusted.
     const channelInstance = event.channel.whatsappInstance;
     if (
@@ -298,6 +306,24 @@ export class InboundWebhookProductionService {
     });
 
     if (!ad || ad.adAccountId !== reporting.adAccountId) {
+      throw new ProductionItemFailure(
+        "inbound_webhook_production_route_invalid",
+      );
+    }
+
+    const currentRoute = await new InboundWebhookMetaRouteReaderService(
+      this.prisma,
+    ).previewRoute({
+      workspaceId: event.workspaceId,
+      adId: event.adId,
+      ...resolved,
+    });
+    if (
+      currentRoute.status !== "resolved" ||
+      currentRoute.reportingAccountId !== reporting.id ||
+      currentRoute.businessConnectionId !== business.id ||
+      currentRoute.conversionDestinationId !== destination.id
+    ) {
       throw new ProductionItemFailure(
         "inbound_webhook_production_route_invalid",
       );

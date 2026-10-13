@@ -33,6 +33,8 @@ import { RUNTIME_ENV, type RuntimeEnv } from "../common/runtime/runtime.module";
 import { parseInboundWebhooksConfig } from "../config/deployment-config";
 import { ConversionEventsService } from "../conversion-events/conversion-events.service";
 import { InboundWebhookPayloadEncryptionService } from "../inbound-webhooks/inbound-webhook-payload-encryption.service";
+import { inboundMetaRouteMatches } from "../inbound-webhooks/inbound-webhook-meta-route-eligibility";
+import { InboundWebhookMetaRouteReaderService } from "../inbound-webhooks/inbound-webhook-meta-route-reader.service";
 import { inboundWebhookParserContext } from "../inbound-webhooks/providers/inbound-webhook-parser";
 import type { ParsedInboundWebhookEvent } from "../inbound-webhooks/providers/inbound-webhook-parser";
 import { InboundWebhookParserRegistry } from "../inbound-webhooks/providers/inbound-webhook-parser.registry";
@@ -356,11 +358,27 @@ export class InboundWebhookReplayService {
     const adAccountsByAd = new Map(ads.map((ad) => [ad.adId, ad.adAccountId]));
     const payloadAvailable = (event: (typeof events)[number]) =>
       this.payloadAvailable(event.delivery, now);
+    const routeReadiness = new Map(
+      await Promise.all(
+        events.map(
+          async (event) =>
+            [
+              event,
+              this.routeReady(
+                event,
+                event.adId ? (adAccountsByAd.get(event.adId) ?? null) : null,
+              ) &&
+                (await this.currentRouteReady(
+                  this.prisma,
+                  connection.workspaceId,
+                  event,
+                )),
+            ] as const,
+        ),
+      ),
+    );
     const routeResolved = (event: (typeof events)[number]) =>
-      this.routeReady(
-        event,
-        event.adId ? (adAccountsByAd.get(event.adId) ?? null) : null,
-      );
+      routeReadiness.get(event) === true;
     const insideReplayWindow = (event: (typeof events)[number]) =>
       this.replayWindowEligible(event, connection);
     const nextPayloadExpiresAt = events
@@ -626,15 +644,20 @@ export class InboundWebhookReplayService {
         const adAccountsByAd = new Map(
           ads.map((ad) => [ad.adId, ad.adAccountId]),
         );
-        const events = candidates
-          .filter((event) => this.replayWindowEligible(event, connection))
-          .filter((event) =>
+        const events: typeof candidates = [];
+        for (const event of candidates) {
+          if (
+            this.replayWindowEligible(event, connection) &&
             this.routeReady(
               event,
               event.adId ? (adAccountsByAd.get(event.adId) ?? null) : null,
-            ),
-          )
-          .slice(0, requestedLimit);
+            ) &&
+            (await this.currentRouteReady(tx, connection.workspaceId, event))
+          ) {
+            events.push(event);
+            if (events.length === requestedLimit) break;
+          }
+        }
 
         if (events.length === 0) {
           throw new BadRequestException(
@@ -990,13 +1013,19 @@ export class InboundWebhookReplayService {
     const business = event.resolvedBusinessConnection;
     const reporting = event.resolvedReportingAccount;
     const destination = event.resolvedConversionDestination;
-    const routeStillActive = event.channel.routes.some(
-      (route) =>
-        route.metaBusinessConnectionId === event.resolvedBusinessConnectionId &&
-        route.metaReportingAccountId === event.resolvedReportingAccountId &&
-        route.metaConversionDestinationId ===
-          event.resolvedConversionDestinationId,
-    );
+    const resolved = {
+      businessConnectionId: event.resolvedBusinessConnectionId,
+      reportingAccountId: event.resolvedReportingAccountId,
+      conversionDestinationId: event.resolvedConversionDestinationId,
+    };
+    const routeStillActive =
+      event.channel.routes.filter(
+        (route) =>
+          route.workspaceId === event.workspaceId &&
+          route.active &&
+          route.validationStatus === "valid" &&
+          inboundMetaRouteMatches(route, resolved),
+      ).length === 1;
     // Only the instance bound to this tenant-owned inbound origin is trusted.
     const channelInstance = event.channel.whatsappInstance;
     if (
@@ -1086,6 +1115,22 @@ export class InboundWebhookReplayService {
     });
 
     if (!ad || ad.adAccountId !== reporting.adAccountId) {
+      throw new ReplayItemFailure("inbound_webhook_replay_route_invalid");
+    }
+
+    const currentRoute = await new InboundWebhookMetaRouteReaderService(
+      this.prisma,
+    ).previewRoute({
+      workspaceId: event.workspaceId,
+      adId: event.adId,
+      ...resolved,
+    });
+    if (
+      currentRoute.status !== "resolved" ||
+      currentRoute.reportingAccountId !== reporting.id ||
+      currentRoute.businessConnectionId !== business.id ||
+      currentRoute.conversionDestinationId !== destination.id
+    ) {
       throw new ReplayItemFailure("inbound_webhook_replay_route_invalid");
     }
 
@@ -1528,6 +1573,42 @@ export class InboundWebhookReplayService {
     };
   }
 
+  private async currentRouteReady(
+    client: ConstructorParameters<
+      typeof InboundWebhookMetaRouteReaderService
+    >[0],
+    workspaceId: string,
+    event: {
+      adId: string | null;
+      resolvedBusinessConnectionId: string | null;
+      resolvedReportingAccountId: string | null;
+      resolvedConversionDestinationId: string | null;
+    },
+  ): Promise<boolean> {
+    if (
+      !event.adId ||
+      !event.resolvedBusinessConnectionId ||
+      !event.resolvedReportingAccountId ||
+      !event.resolvedConversionDestinationId
+    )
+      return false;
+    const preview = await new InboundWebhookMetaRouteReaderService(
+      client,
+    ).previewRoute({
+      workspaceId,
+      adId: event.adId,
+      businessConnectionId: event.resolvedBusinessConnectionId,
+      reportingAccountId: event.resolvedReportingAccountId,
+      conversionDestinationId: event.resolvedConversionDestinationId,
+    });
+    return (
+      preview.status === "resolved" &&
+      preview.businessConnectionId === event.resolvedBusinessConnectionId &&
+      preview.reportingAccountId === event.resolvedReportingAccountId &&
+      preview.conversionDestinationId === event.resolvedConversionDestinationId
+    );
+  }
+
   private routeReady(
     event: {
       classification: string;
@@ -1574,14 +1655,13 @@ export class InboundWebhookReplayService {
       currentAdAccountId &&
       reporting.adAccountId === currentAdAccountId &&
       destination?.status === "configured" &&
-      event.channel.routes.some(
-        (route) =>
-          route.metaBusinessConnectionId ===
-            event.resolvedBusinessConnectionId &&
-          route.metaReportingAccountId === event.resolvedReportingAccountId &&
-          route.metaConversionDestinationId ===
-            event.resolvedConversionDestinationId,
-      ),
+      event.channel.routes.filter((route) =>
+        inboundMetaRouteMatches(route, {
+          businessConnectionId: event.resolvedBusinessConnectionId,
+          reportingAccountId: event.resolvedReportingAccountId,
+          conversionDestinationId: event.resolvedConversionDestinationId,
+        }),
+      ).length === 1,
     );
   }
 

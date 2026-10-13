@@ -958,6 +958,11 @@ function ChannelReadiness({
           Rota e payload preservado prontos para a revisao operacional.
         </p>
       )}
+      <p className="muted">
+        A prontidao da rota nao ativa envios: a conexao ainda exige parser
+        certificado e producao habilitada. CTWA anteriores a ativacao nao sao
+        enviados automaticamente.
+      </p>
 
       {readiness.alreadyMaterializedCtwa > 0 ? (
         <p className="muted inbound-readiness-materialized">

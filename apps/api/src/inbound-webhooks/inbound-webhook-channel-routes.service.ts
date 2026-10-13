@@ -22,6 +22,10 @@ import type {
 import { normalizePhoneIdentity } from "../common/phone/phone-identity";
 import { PrismaService } from "../common/prisma/prisma.service";
 import {
+  inboundMetaRouteEligible,
+  inboundMetaRouteMatches,
+} from "./inbound-webhook-meta-route-eligibility";
+import {
   type InboundWebhookMetaRoutePreview,
   InboundWebhookMetaRouteReaderService,
 } from "./inbound-webhook-meta-route-reader.service";
@@ -647,7 +651,12 @@ export class InboundWebhookChannelRoutesService {
     > = [];
 
     for (const route of channel.routes) {
-      if (!route.metaBusinessConnectionId) {
+      if (
+        !route.active ||
+        route.validationStatus !== validRouteStatus ||
+        route.workspaceId !== channel.workspaceId ||
+        !route.metaBusinessConnectionId
+      ) {
         previews.push({
           status: "unresolved",
           reason: "route_reference_missing",
@@ -729,7 +738,13 @@ export class InboundWebhookChannelRoutesService {
     channel: PersistedChannel,
     adIdValues: Array<string | null>,
   ): Promise<boolean> {
-    if (channel.connection.status === "paused" || channel.status === "paused") {
+    // A saved route is an operator's scope, including wildcard restrictions.
+    // Learning must never expand it to other accounts, BMs or destinations.
+    if (
+      channel.routes.length > 0 ||
+      channel.connection.status === "paused" ||
+      channel.status === "paused"
+    ) {
       return false;
     }
 
@@ -886,11 +901,9 @@ export class InboundWebhookChannelRoutesService {
   ): preview is ResolvedMetaRoutePreview {
     return (
       this.isResolvedPreview(preview) &&
-      preview.businessConnectionId === route.metaBusinessConnectionId &&
-      (route.metaReportingAccountId === null ||
-        preview.reportingAccountId === route.metaReportingAccountId) &&
-      (route.metaConversionDestinationId === null ||
-        preview.conversionDestinationId === route.metaConversionDestinationId)
+      route.active &&
+      route.validationStatus === validRouteStatus &&
+      inboundMetaRouteMatches(route, preview)
     );
   }
 
@@ -1005,80 +1018,15 @@ export class InboundWebhookChannelRoutesService {
     workspaceId: string,
     route: NormalizedRouteInput,
   ): Promise<void> {
-    const business = await transaction.metaBusinessConnection.findFirst({
-      where: {
-        id: route.metaBusinessConnectionId,
-        workspaceId,
-      },
-      select: {
-        id: true,
-        workspaceId: true,
-        status: true,
-        credential: {
-          select: {
-            workspaceId: true,
-            status: true,
-          },
-        },
-      },
-    });
-
     if (
-      !business ||
-      business.workspaceId !== workspaceId ||
-      business.status !== "active" ||
-      business.credential.workspaceId !== workspaceId ||
-      business.credential.status !== "active"
+      !(await inboundMetaRouteEligible(transaction, workspaceId, {
+        ...route,
+        workspaceId,
+        active: true,
+        validationStatus: validRouteStatus,
+      }))
     ) {
       this.throwNotFound();
-    }
-
-    if (route.metaReportingAccountId) {
-      const account = await transaction.metaReportingAccount.findFirst({
-        where: {
-          id: route.metaReportingAccountId,
-          workspaceId,
-        },
-        select: {
-          id: true,
-          workspaceId: true,
-          businessConnectionId: true,
-          active: true,
-        },
-      });
-
-      if (
-        !account ||
-        account.workspaceId !== workspaceId ||
-        !account.active ||
-        account.businessConnectionId !== business.id
-      ) {
-        this.throwNotFound();
-      }
-    }
-
-    if (route.metaConversionDestinationId) {
-      const destination = await transaction.metaConversionDestination.findFirst(
-        {
-          where: {
-            id: route.metaConversionDestinationId,
-            workspaceId,
-          },
-          select: {
-            id: true,
-            workspaceId: true,
-            status: true,
-          },
-        },
-      );
-
-      if (
-        !destination ||
-        destination.workspaceId !== workspaceId ||
-        destination.status !== "configured"
-      ) {
-        this.throwNotFound();
-      }
     }
   }
 
@@ -1238,15 +1186,27 @@ export class InboundWebhookChannelRoutesService {
     }
 
     return new Map(
-      channels.map((channel) => [
-        channel.id,
-        this.channelReadiness(
-          channel,
-          eventsByChannel.get(channel.id) ?? [],
-          now,
-          availableDeliveryIds,
+      await Promise.all(
+        channels.map(
+          async (channel) =>
+            [
+              channel.id,
+              this.channelReadiness(
+                channel,
+                eventsByChannel.get(channel.id) ?? [],
+                now,
+                availableDeliveryIds,
+                (
+                  await Promise.all(
+                    channel.routes.map((route) =>
+                      inboundMetaRouteEligible(this.prisma, workspaceId, route),
+                    ),
+                  )
+                ).filter(Boolean).length,
+              ),
+            ] as const,
         ),
-      ]),
+      ),
     );
   }
 
@@ -1255,11 +1215,9 @@ export class InboundWebhookChannelRoutesService {
     events: ChannelReadinessEvent[],
     now: Date,
     availableDeliveryIds: ReadonlySet<string>,
+    validRouteCount = 0,
   ): InboundWebhookChannelReadinessDto {
     const routeCount = channel.routes.length;
-    const validRouteCount = channel.routes.filter(
-      (route) => route.validationStatus === validRouteStatus,
-    ).length;
     const routedEvents = events.filter(
       (event) => event.classification === "eligible_route_resolved",
     );

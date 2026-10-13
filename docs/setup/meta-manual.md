@@ -43,6 +43,12 @@ O handshake do webhook de **Meta Ads** usa `META_WEBHOOK_VERIFY_TOKEN` e o rotea
 5. Teste/salve a conexão e faça a descoberta dos ativos. Se a validação falhar, corrija permissões, BM ou token na Meta antes de seguir.
 6. Selecione explicitamente o BM, a conta de anúncios para relatórios, o Pixel e a Página que receberão a conversão. Salve o destino e valide a seleção no workspace.
 
+Para a **rota de mensagens Meta Cloud**, a opção **qualquer conta do BM**
+permite uma única rota para várias contas. Cada conta ainda precisa ter
+autorização própria para o destino; o destino padrão do BM não concede esse
+acesso. Conta/destino opcionais são resolvidos pelo anúncio, sem ignorar
+atribuições ambíguas. Veja [ativação e limites de recuperação de CTWA](whatsapp-providers.md#rota-com-qualquer-conta-do-bm-e-ativação-do-meta-cloud).
+
 ## Verificação
 
 - `/integrations` mostra a conexão manual Meta como conectada, os ativos descobertos e o destino (BM/Pixel/Página/conta) selecionado

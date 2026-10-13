@@ -181,6 +181,65 @@ configuração mais comum hoje.
    destino). Um canal sem rota Meta válida não pode ser ativado para
    envio automático.
 
+### Rota com qualquer conta do BM e ativação do Meta Cloud
+
+Você pode salvar **uma única rota** com o BM, **qualquer conta desse BM**
+e um destino escolhido. Não precisa criar uma rota por conta: um BM com três
+contas e um único destino usa a mesma rota. A conta explícita continua
+suportada; o destino também pode ficar opcional para resolução por anúncio.
+
+Antes de salvar ou ativar, o BM e sua credencial precisam estar ativos no
+workspace, com ao menos uma conta ativa desse BM autorizada a usar um destino
+configurado. O destino padrão do BM, sozinho, **não autoriza todas as contas**:
+confira os destinos permitidos de cada conta em **Tokens, BMs e destinos**.
+O vínculo explícito antigo de destino da própria conta continua aceito.
+
+Cada CTWA resolve a conta pelo anúncio sincronizado e verifica novamente BM,
+credencial, workspace, conta e autorização do destino. Se uma conta não tiver
+acesso, o anúncio estiver ausente ou houver vários destinos sem atribuição
+única ao anúncio, esse evento permanece bloqueado. Escolher um Pixel/Página
+na rota não elimina essa ambiguidade. Salvar uma rota restringe o roteamento:
+a reavaliação não acrescenta rotas automaticamente fora dessa escolha.
+
+**Rota pronta** descreve a rota e os payloads preservados; não significa que
+a conexão já envia. Ative o canal e só depois promova a conexão, que exige
+parser certificado, produção habilitada e nenhum replay em andamento. Confira
+também a licença e as permissões da instalação. Antes da produção Meta Cloud,
+configure o App Secret do **seu próprio app** somente no servidor conforme a
+seção abaixo; não use segredo PalmUP nem envie valores por chat.
+
+**Limite atual desta edição:** o serviço de certificação/replay existe, mas
+não há endpoint de proprietário nem UI operacional para o aluno certificar o
+parser Meta Cloud ou autorizar esse replay. Se o parser estiver
+`observation_only` ou `retired`, esta correção não libera produção. Não altere
+o banco, certifique outras versões em lote ou ligue replay para contornar o
+bloqueio. A remoção do requisito de primeira CTWA e a assinatura automática
+da WABA não fazem parte desta correção.
+
+### CTWA preservados antes da ativação
+
+Ativar o canal e salvar rotas reavalia eventos abertos; isso apenas atualiza
+o roteamento. **Não envia automaticamente CTWA recebidos antes da ativação**
+da conexão/canal. A recuperação periódica recoloca na fila itens de produção
+que já existiam e ficaram pendentes; não transforma observações antigas em
+novos itens.
+
+O worker de replay existente aceita a rota com conta/destino opcionais e
+materializa um evento histórico somente com parser certificado, payload
+cifrado ainda disponível, janela histórica válida, ativos autorizados e
+identidade correspondente ao parser. Mantém a deduplicação e não reenfileira
+uma conversão já enviada. Isso foi verificado com fixtures locais, sem envio
+Meta real. O payload bruto tem retenção de sete dias; sem payload disponível
+esse caminho não pode reprocessar o evento.
+
+O template mantém replay desligado por padrão e não expõe a autorização ao
+aluno. Portanto, nesta entrega **não há um botão/comando de recuperação
+histórica para operar no clone do aluno**. Uma próxima proposta mínima,
+sujeita a aprovação separada, é expor ao proprietário os serviços existentes
+de certificação da versão exata e autorização de um canário por canal, com
+licença, permissões, evidência CTWA, auditoria, retenção e deduplicação. Não é
+uma instrução para editar dados ou executar replay manual em produção.
+
 ### `META_APP_SECRET` — opcional para observar, necessário para produção
 
 `META_APP_SECRET` (o **App Secret** do app Meta — *não* é o token

@@ -43,6 +43,28 @@ afterEach(() => {
 });
 
 describe("inbound webhook server actions", () => {
+  it("returns the allowlisted channel route denial without exposing arbitrary API errors", async () => {
+    serverApiFetch.mockRejectedValueOnce(
+      new Error("Configure uma rota Meta valida antes de ativar o canal"),
+    );
+    expect(
+      await setInboundWebhookChannelStatusAction(
+        form({ channelId: "channel_1", status: "active" }),
+      ),
+    ).toEqual({
+      ok: false,
+      message: "Configure uma rota Meta valida antes de ativar o canal",
+    });
+    serverApiFetch.mockRejectedValueOnce(new Error("synthetic-private-detail"));
+    expect(
+      await setInboundWebhookChannelStatusAction(
+        form({ channelId: "channel_1", status: "active" }),
+      ),
+    ).toEqual({
+      ok: false,
+      message: "Nao foi possivel alterar o status deste canal.",
+    });
+  });
   it("creates an Umbler connection and returns the credential only as an ephemeral result", async () => {
     const webhookUrl = `https://api.wpptrack.test/webhooks/inbound/connection_1?token=${firstSecret}`;
     serverApiFetch.mockResolvedValueOnce({

@@ -161,6 +161,14 @@ canal é diferente:
 4. Assine o campo **`messages`**. Sem isso a Meta valida e nunca envia nada.
 5. Cadastre o canal/número e configure a rota Meta do canal.
 
+Uma rota pode usar **qualquer conta do BM**, sem criar uma rota por conta;
+cada anúncio ainda precisa resolver uma conta autorizada ao destino no mesmo
+workspace. **Rota pronta** não certifica o parser nem liga produção, e ativar
+não envia CTWA antigos automaticamente. O template ainda não expõe ao
+proprietário a certificação/replay de Meta Cloud: veja [requisitos e limites
+de recuperação](setup/whatsapp-providers.md#rota-com-qualquer-conta-do-bm-e-ativação-do-meta-cloud)
+antes de tentar ativar envios.
+
 **O que já funciona:** atribuição de **CTWA** — o produto lê `referral.ctwa_clid` e `referral.source_id` (ID do anúncio) das mensagens recebidas e gera lead/conversão a partir delas.
 
 **O que não funciona, e não é configuração:** gatilho por **palavra-chave ou tag do atendente**. O webhook do Cloud API entrega só as mensagens que o número **recebe** — nunca as que o seu time envia. Para gatilho de atendente use **Uazapi (BYO)** ou **Umbler Talk**. Gatilhos vindos de CRM/call center são **futuro**, não existem hoje.

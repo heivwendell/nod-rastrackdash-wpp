@@ -4,6 +4,7 @@ import type {
   InboundWebhookChannelStatusUpdateInputDto,
   InboundWebhookConnectionStatusUpdateInputDto,
 } from "@wpptrack/shared";
+import { hasEligibleInboundMetaRoute } from "./inbound-webhook-meta-route-eligibility";
 
 /**
  * Single implementation of the "promote a connection to production" and
@@ -164,13 +165,11 @@ export async function applyInboundWebhookChannelStatus(
   if (
     status === "active" &&
     input.requireValidMetaRoute &&
-    !current.routes.some(
-      (route) =>
-        route.validationStatus === validRouteStatus &&
-        route.metaBusinessConnectionId !== null &&
-        route.metaReportingAccountId !== null &&
-        route.metaConversionDestinationId !== null,
-    )
+    !(await hasEligibleInboundMetaRoute(
+      transaction,
+      workspaceId,
+      current.routes,
+    ))
   ) {
     throw new ConflictException(
       "Configure uma rota Meta valida antes de ativar o canal",
@@ -390,10 +389,7 @@ async function assertProductionReady(
           active: true,
           validationStatus: validRouteStatus,
           metaBusinessConnectionId: { not: null },
-          metaReportingAccountId: { not: null },
-          metaConversionDestinationId: { not: null },
         },
-        select: { id: true },
       },
     },
   });
@@ -404,13 +400,20 @@ async function assertProductionReady(
     );
   }
 
-  if (
-    options.requireValidMetaRoute &&
-    activeChannels.some((channel) => channel.routes.length === 0)
-  ) {
-    throw new ConflictException(
-      "Todo canal ativo precisa de uma rota Meta valida",
-    );
+  if (options.requireValidMetaRoute) {
+    for (const channel of activeChannels) {
+      if (
+        !(await hasEligibleInboundMetaRoute(
+          transaction,
+          connection.workspaceId,
+          channel.routes,
+        ))
+      ) {
+        throw new ConflictException(
+          "Todo canal ativo precisa de uma rota Meta valida",
+        );
+      }
+    }
   }
 
   const activeReplay = await transaction.inboundWebhookReplayBatch.count({
