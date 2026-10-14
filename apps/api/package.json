@@ -14,6 +14,7 @@
     "platform-owner:promote": "node dist/apps/api/src/scripts/promote-platform-owner.js",
     "create-user": "ts-node --project tsconfig.json src/scripts/create-user.ts",
     "test": "vitest run",
+    "test:compiled-di": "pnpm build && vitest run --config vitest.compiled-di.config.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
     "pretypecheck": "pnpm run prisma:generate",
     "typecheck": "tsc -p tsconfig.json --noEmit"

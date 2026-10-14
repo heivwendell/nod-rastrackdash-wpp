@@ -97,7 +97,57 @@ artificial de datas, retenção ou tentativas.
 
 ## Falhou ou ficou UNKNOWN
 
-**Falhou** não autoriza outro envio. **Entrega incerta (UNKNOWN)** significa
+### Bloqueio MissingAccessToken com uma rota manual válida
+
+Esta correção local vincula explicitamente o resolver de conexões Meta no
+sender da API. A versão anterior podia iniciar com esse resolver ausente,
+mesmo registrado no módulo, e buscar configuração legada em vez do token
+do BM manual. Fixtures que construíam o serviço diretamente não detectavam
+o problema de injeção do Nest. A correção exige reconstruir/reiniciar somente
+a **API**; o web desta mesma base pode continuar. Não exige migration,
+variável nova, troca de credencial nem reconexão da Meta.
+
+Um `ConversionEventLog` com `not_configured` / `MissingAccessToken` por essa
+falha fica bloqueado **antes do claim permanente e antes do HTTP**. O worker
+registra o resultado `not_configured` em `JobAttempt` e termina sem lançar
+erro de rede; `attemptNumber` é `attemptsMade + 1`, sem agendar retry por esse
+resultado. Registros de execução do worker não são claims de dispatch.
+No replay, a tentativa de materialização incrementa `attemptCount` do item:
+um canário materializado uma vez permanece `materialized`, com
+`attemptCount = 1`; o lote pode estar `completed`, `materializedCount = 1`
+e `failedCount = 0`, enquanto o resultado exibido é **Falhou**, porque lê
+o log de conversão bloqueado. Isso não torna o item elegível a uma nova
+materialização nem autoriza envio automático.
+
+Após atualização autorizada da API, e somente com decisão explícita de
+envio real, o **owner** pode usar o fluxo existente **Eventos → Reenviar
+bloqueados**, restringindo workspace, período e filtros ao caso conferido.
+Esse fluxo reabre o log existente e preserva `eventId`/`dedupeKey`; não cria
+outra conversão nem zera as tentativas do replay. Para verificar primeiro
+somente o canário, use **Reenviar** no detalhe desse evento em Eventos;
+o botão individual já aceita bloqueios de configuração. Não confirme um
+lote mais amplo para testar um único evento. O sender revalida as autorizações
+atuais e continua respeitando
+qualquer claim já consumido. Não use esse procedimento para UNKNOWN, timeout
+ou dispatch iniciado; não apague auditorias nem altere dados diretamente.
+
+Depois de `sent` com `sentAt` e ACK válido de um evento, atualize **prévia e
+resultado** no canal. O resultado do canário lê o log confirmado, e os demais
+só ficam disponíveis se o canário continuar no mesmo contexto autorizado.
+Obtenha uma **nova prévia** e confirme separadamente os demais. A correção
+não reabre filas, não envia histórico nem libera os demais sozinha.
+
+Validação local: módulos reais compilados pelo `nest build`, com Nest Testing
+Module, resolver/criptografia/adapter reais e persistência/fetch simulados.
+PENDENTE: atualização da instalação e verificação de envio Meta real após
+autorização operacional. Não foi reexecutada prova de locks PostgreSQL;
+esta correção não altera o mecanismo de locks.
+
+### Tentativa consumida ou entrega incerta
+
+**Falhou** sozinho não autoriza outro envio nem libera os demais. O caso de
+bloqueio de configuração antes do claim segue o procedimento acima.
+**Entrega incerta (UNKNOWN)** significa
 que não há confirmação suficiente de entrega ou não entrega. Um timeout,
 um crash após o início do envio, HTTP 200 com JSON inválido/vazio, ACK sem
 confirmação de um evento ou uma tentativa consumida sem resultado confirmado

@@ -2,7 +2,6 @@ import {
   Inject,
   Injectable,
   NotFoundException,
-  Optional,
 } from "@nestjs/common";
 import {
   kommoPublicationAuthorized,
@@ -253,7 +252,8 @@ export class ConversionEventsService {
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(MetaCapiAdapter) private readonly metaCapiAdapter: MetaCapiAdapter,
     private readonly metaTokenEncryption: MetaTokenEncryptionService,
-    @Optional()
+    // The union emits Object metadata; Nest must bind the exported class token.
+    @Inject(MetaConnectionResolverService)
     private readonly connectionResolver:
       MetaConnectionResolverService | undefined,
     @Inject(LicenseClientService)
@@ -1695,7 +1695,12 @@ export class ConversionEventsService {
       }
     }
 
-    if (log.sourceTrigger === "kommo_stage") {
+    if (
+      log.sourceTrigger === "kommo_stage" ||
+      log.sourceTrigger === "inbound_webhook:meta_cloud" ||
+      log.metaBusinessConnectionId ||
+      log.metaConversionDestinationId
+    ) {
       return {
         source: "manual",
         accessToken: null,
@@ -1705,7 +1710,10 @@ export class ConversionEventsService {
         adAccountId: null,
         businessConnectionId: null,
         conversionDestinationId: null,
-        routeError: "Rota Kommo autorizada indisponivel",
+        routeError:
+          log.sourceTrigger === "kommo_stage"
+            ? "Rota Kommo autorizada indisponivel"
+            : "Rota Meta normalizada indisponivel",
         legacyShadowParity: null,
       };
     }
