@@ -118,25 +118,34 @@ Samuel elevou estes 3 itens à **prioridade máxima**, acima do restante do plan
 | 5 | Doc de atualização do aluno (redeploy API/Web) | **MERGEADO** | #60 `43152b4` |
 | 6 | Banner de atualização de versão | **MERGEADO** | #60 `43152b4` — `GET /backoffice/template-version` + UI só no backoffice |
 | 7 | PostgreSQL external connector | **PENDENTE** | só com adapter + testes reais |
-| 8 | Segurança operacional geral + release | **PRÓXIMA** | candidata a `v1.1.0`; ver pendências abaixo |
+| 8 | Segurança operacional geral + release | **PRÓXIMA** | versão definida pelo mantenedor; ver pendências abaixo |
 
 Entregas fora da fila original, já em `main`:
 
 - docs dos alunos alinhados ao produto — #56 `7491ae1`;
 - UAZAPI: provisionar trigger origin após teste — #57 `6b9c5cc`;
 - Meta: sync inicial ancorado no WhatsApp (máx. 7 dias, substitui 90 dias) — #58 `8347ab3`;
-- Data Crazy inbound CTWA, com migrations `20260929120000`/`20260929120100` — #59 `e0b475e`.
+- Data Crazy inbound CTWA, com migrations `20260929120000`/`20260929120100` — #59 `e0b475e`;
+- identidade de build automática do aluno + guias de atualização — #61 `643dc0d`;
+- Relatórios: ordenação global de colunas (#63 `5c73603`) e insights determinísticos sem IA (#64 `3251139`);
+- Kommo: conversões por etapa do CRM com UI auditada (#65 `a330e37`), destino único da Meta (#67 `932c655`), roteamento LeadSubmitted e retries seguros (#73 `9b91009`);
+- runtime: `body-parser` declarado como dependência (#66 `1fbfdd2`);
+- Meta CAPI: recado de Trocar token (#68 `2a5b678`), owner reenvia eventos bloqueados (#69 `0bbc2ed`), envio via Tokens/BMs (#70 `6150776`, #71 `837f6b4`), resolver injetado explicitamente no build Nest de produção (#76 `4b8e6eb`);
+- Conectar Meta via login social PalmUP, nova env pública `PALMUP_META_BROKER_URL` (#72 `80c37fb`);
+- **URGENTE** — menos chamadas ao Graph para não esgotar o limite do app Meta PalmUP (#62 `66c8552`, `f469460`);
+- Meta Cloud: rota curinga do BM (#74 `3a49625`), produção para o aluno + recuperação controlada de CTWAs antigos (#75 `27d0eba`).
 
 ### Estado atual detalhado — atualizado em 2026-10-14
 
-- `main` atual: `43152b4` (#60). Última release/tag: `v1.0.0` (2026-08-24).
+- `main` atual: `4b8e6eb` (#76). Última release/tag: `v1.0.0` (2026-08-24).
+- Notas de release seguem `docs/RELEASE_NOTES_AI.md`: `docs/releases/unreleased.json` acumula as mudanças com `version` ainda `PENDENTE` (definida pelo mantenedor) e pendências abertas — envio Meta real, PostgreSQL concorrente real e update/rollback em instalação real.
 - Os três P0 de 2026-09-04 estão mergeados; homologação em produção não registrada neste arquivo.
 - Fase 3A MySQL: inalterada desde 2026-09-04 — mergeada e pausada no smoke real.
 - Pendências para o item 8 (release):
-  - suíte web em `main` @ `43152b4` (Windows): 14 falhas / 400 passando. Diagnóstico:
+  - suíte web em `main` @ `4b8e6eb` (Windows): 14 falhas / 631 passando — mesmas 14 vistas em `43152b4`. Pré-requisito: rodar `pnpm --filter @wpptrack/shared build` antes; com `packages/shared/dist` velho, os schemas importados chegam `undefined` e a suíte acusa ~131 falhas falsas (`reading 'safeParse'`). Diagnóstico:
     - **3 só no Windows** — `app-layout`, `events-route` (fonte lido com CRLF: repo sem `.gitattributes` + `core.autocrlf=true`) e `template-version-banner` (`path.relative()` com `\`). Correção: `.gitattributes` com `eol=lf` e normalizar separador no teste;
     - **11 já existentes antes do #60** (`integrations-route` ×6, `navigation` ×2, `settings-route` ×2, `provider-conversion-rule-actions` ×1). A maioria procura textos/rotas que não existem mais em `src` (ex.: `/subscription`, removido junto com o billing; "Webhooks de plataformas WhatsApp" → "Webhooks de entrada") — provável teste desatualizado. Investigar com cuidado: `integrations-route` "Meta com status desconhecido" (texto existe em `src`, não renderiza), `integrations-route` sem chamada de `fetch` esperada e `provider-conversion-rule-actions` retornando `ok: false`;
-  - `CHANGELOG.md` `[Unreleased]` só lista Data Crazy; faltam #43–#60;
+  - `CHANGELOG.md` `[Unreleased]` cobre Data Crazy, Conectar Meta e a redução de chamadas Meta, mas não lista vários PRs entre #43 e #76 (ex.: delete de workspace, GupShup/Umbler, Meta Cloud F1/F2, Kommo, relatórios); conferir contra `docs/releases/unreleased.json`;
   - revisão de segurança final.
 - Candidato novo, ainda não aprovado: parser inbound `chatwoot_v1`. Chatwoot ≥ v4.15.0 (PR chatwoot#14681) persiste `referral` do Cloud API/Twilio em `content_attributes.referral` e o expõe no webhook `message_created`; providers não oficiais não têm captura no core.
 
@@ -146,7 +155,7 @@ O modelo operacional continua: **uma instalação por aluno**, com banco/deploy/
 
 Itens 1, 2, 3, 5 e 6 da ordem de 2026-09-04 estão mergeados. Ordem vigente **agora** (proposta, aguardando decisão do Samuel):
 
-1. segurança final + release `v1.1.0` (começando pela suíte web verde e CHANGELOG);
+1. segurança final + próxima release — versão definida pelo mantenedor (começando pela suíte web verde, CHANGELOG e pendências do `unreleased.json`);
 2. retomar smoke MySQL fictício no Dokploy (3306 pública);
 3. PostgreSQL external, se necessário;
 4. avaliar parser `chatwoot_v1` (não aprovado).
