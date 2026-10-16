@@ -133,19 +133,25 @@ Entregas fora da fila original, já em `main`:
 - Meta CAPI: recado de Trocar token (#68 `2a5b678`), owner reenvia eventos bloqueados (#69 `0bbc2ed`), envio via Tokens/BMs (#70 `6150776`, #71 `837f6b4`), resolver injetado explicitamente no build Nest de produção (#76 `4b8e6eb`);
 - Conectar Meta via login social PalmUP, nova env pública `PALMUP_META_BROKER_URL` (#72 `80c37fb`);
 - **URGENTE** — menos chamadas ao Graph para não esgotar o limite do app Meta PalmUP (#62 `66c8552`, `f469460`);
-- Meta Cloud: rota curinga do BM (#74 `3a49625`), produção para o aluno + recuperação controlada de CTWAs antigos (#75 `27d0eba`).
+- Meta Cloud: rota curinga do BM (#74 `3a49625`), produção para o aluno + recuperação controlada de CTWAs antigos (#75 `27d0eba`);
+- leads novos × que voltaram e exportação CSV/Excel — #78 `29c66d4`;
+- rodapé visível no celular e banner de licença fora da sidebar — #79 `22118dc`;
+- Hub de Integrações com 4 abas (WhatsApp, Atendimento e vendas, Anúncios, CRM) — #80 `71072f8`;
+- tela Conversões com alcance da regra e Unificar — #81 `252a542`;
+- base de compra CTWA e certificação dos parsers validados — #82 `d26ef44`;
+- Fase 4a/4b/4c: Payt como origem de venda (#83 `36d86f5`), CRM Pipedrive e Kommo sem ID do anúncio (#84 `62c8e3b`), Kommo com destino só pelo número oficial do lead (#85 `dba61c9`), Unnichat com roteamento por número (#86 `0d3f81c`).
 
-### Estado atual detalhado — atualizado em 2026-10-14
+### Estado atual detalhado — atualizado em 2026-10-16
 
-- `main` atual: `4b8e6eb` (#76). Última release/tag: `v1.0.0` (2026-08-24).
+- `main` atual: `0d3f81c` (#86). Última release/tag: `v1.0.0` (2026-08-24).
 - Notas de release seguem `docs/RELEASE_NOTES_AI.md`: `docs/releases/unreleased.json` acumula as mudanças com `version` ainda `PENDENTE` (definida pelo mantenedor) e pendências abertas — envio Meta real, PostgreSQL concorrente real e update/rollback em instalação real.
 - Os três P0 de 2026-09-04 estão mergeados; homologação em produção não registrada neste arquivo.
 - Fase 3A MySQL: inalterada desde 2026-09-04 — mergeada e pausada no smoke real.
 - Pendências para o item 8 (release):
-  - suíte web em `main` @ `4b8e6eb` (Windows): 14 falhas / 631 passando — mesmas 14 vistas em `43152b4`. Pré-requisito: rodar `pnpm --filter @wpptrack/shared build` antes; com `packages/shared/dist` velho, os schemas importados chegam `undefined` e a suíte acusa ~131 falhas falsas (`reading 'safeParse'`). Diagnóstico:
-    - **3 só no Windows** — `app-layout`, `events-route` (fonte lido com CRLF: repo sem `.gitattributes` + `core.autocrlf=true`) e `template-version-banner` (`path.relative()` com `\`). Correção: `.gitattributes` com `eol=lf` e normalizar separador no teste;
-    - **11 já existentes antes do #60** (`integrations-route` ×6, `navigation` ×2, `settings-route` ×2, `provider-conversion-rule-actions` ×1). A maioria procura textos/rotas que não existem mais em `src` (ex.: `/subscription`, removido junto com o billing; "Webhooks de plataformas WhatsApp" → "Webhooks de entrada") — provável teste desatualizado. Investigar com cuidado: `integrations-route` "Meta com status desconhecido" (texto existe em `src`, não renderiza), `integrations-route` sem chamada de `fetch` esperada e `provider-conversion-rule-actions` retornando `ok: false`;
-  - `CHANGELOG.md` `[Unreleased]` cobre Data Crazy, Conectar Meta e a redução de chamadas Meta, mas não lista vários PRs entre #43 e #76 (ex.: delete de workspace, GupShup/Umbler, Meta Cloud F1/F2, Kommo, relatórios); conferir contra `docs/releases/unreleased.json`;
+  - suíte web: **verde em `0d3f81c` + PR #87** — num checkout CRLF (Windows), 276 arquivos, 1133/1133. Pré-requisito: rodar `pnpm --filter @wpptrack/shared build` antes; com `packages/shared/dist` velho, os schemas importados chegam `undefined` e a suíte acusa ~131 falhas falsas (`reading 'safeParse'`). Histórico:
+    - as **11 falhas antigas** (`integrations-route` ×6, `navigation` ×2, `settings-route` ×2, `provider-conversion-rule-actions` ×1, presentes de antes do #60 até `4b8e6eb`) foram resolvidas no upstream pelos PRs #79–#86, que atualizaram esses testes;
+    - as **falhas só no Windows** (`app-layout`, `events-route`, `kommo-responsive-layout` por CRLF; `template-version-banner` por `path.relative()` com `\`) são corrigidas no PR #87, só em testes. `.gitattributes` com `eol=lf` foi testado e descartado: em clones antigos no Windows, os arquivos ainda em CRLF aparecem como `M` sem diferença de conteúdo, o que pode travar o `git pull` do fluxo de update do aluno;
+  - `CHANGELOG.md` `[Unreleased]` cobre Data Crazy, Conectar Meta e a redução de chamadas Meta, mas não lista vários PRs entre #43 e #86 (ex.: delete de workspace, GupShup/Umbler, Meta Cloud F1/F2, Kommo, relatórios); conferir contra `docs/releases/unreleased.json`;
   - revisão de segurança final.
 - Candidato novo, ainda não aprovado: parser inbound `chatwoot_v1`. Chatwoot ≥ v4.15.0 (PR chatwoot#14681) persiste `referral` do Cloud API/Twilio em `content_attributes.referral` e o expõe no webhook `message_created`; providers não oficiais não têm captura no core.
 
