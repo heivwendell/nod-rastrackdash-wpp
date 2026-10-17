@@ -93,6 +93,7 @@ function sourceLabel(source: string | null) {
   const labels: Record<string, string> = {
     external_mysql: "Integracao externa",
     meta_lead_form: "Formulario Meta",
+    dashboard_leads: "Dashboard Leads (importado)",
     umbler_talk: "Umbler Talk",
     uazapi: "NOD API",
   };

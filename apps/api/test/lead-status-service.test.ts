@@ -53,7 +53,7 @@ function createHarness(
           (log) =>
             log.leadId === where.leadId &&
             (where.OR[0].eventName.in.includes(log.eventName) ||
-              log.sourceTrigger === where.OR[1].sourceTrigger),
+              where.OR[1].sourceTrigger.in.includes(log.sourceTrigger)),
         ) ?? null,
       ),
       findUnique: vi.fn(async () => ({

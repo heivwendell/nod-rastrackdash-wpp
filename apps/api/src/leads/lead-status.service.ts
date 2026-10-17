@@ -14,6 +14,7 @@ import { PrismaService } from "../common/prisma/prisma.service";
 import { ConversionEventsQueueService } from "../common/queue/conversion-events-queue.service";
 import {
   ConversionEventsService,
+  MANUAL_STATUS_TRIGGER,
   META_LEAD_FORM_CRM_TRIGGER,
 } from "../conversion-events/conversion-events.service";
 
@@ -94,8 +95,9 @@ export class LeadStatusService {
           sourceTrigger: { not: "manual_test" },
           OR: [
             { eventName: { in: ["QualifiedLead", "Purchase"] } },
-            // The CRM stage has the connection's own event name.
-            { sourceTrigger: META_LEAD_FORM_CRM_TRIGGER },
+            // The CRM stage has the connection's own event name, and an
+            // imported Dashboard Leads send keeps the name it was sent with.
+            { sourceTrigger: { in: [META_LEAD_FORM_CRM_TRIGGER, MANUAL_STATUS_TRIGGER] } },
           ],
         },
         select: { id: true },

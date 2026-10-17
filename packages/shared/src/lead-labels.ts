@@ -58,5 +58,9 @@ export function leadSourceLabel(
     return "Formulario Meta";
   }
 
+  if (source === "dashboard_leads") {
+    return "Dashboard Leads (importado)";
+  }
+
   return source ?? adId ?? "Origem parcial";
 }
