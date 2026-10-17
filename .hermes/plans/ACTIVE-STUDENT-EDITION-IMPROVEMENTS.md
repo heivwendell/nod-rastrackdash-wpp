@@ -155,6 +155,23 @@ Entregas fora da fila original, já em `main`:
   - revisão de segurança final.
 - Candidato novo, ainda não aprovado: parser inbound `chatwoot_v1`. Chatwoot ≥ v4.15.0 (PR chatwoot#14681) persiste `referral` do Cloud API/Twilio em `content_attributes.referral` e o expõe no webhook `message_created`; providers não oficiais não têm captura no core.
 
+### Trilha Dashboard Leads → RastrackDash — aberta em 2026-10-17
+
+Pedido do Heiv: trazer para o RastrackDash os clientes, tokens e o fluxo de qualificação manual do projeto paralelo Dashboard Leads (Next.js + Supabase na Vercel), e depois desligá-lo. Fontes no escopo: formulário Meta (Lead Ads) e WhatsApp CTWA. A landing page (ConsultaTu, fonte `web`) fica fora.
+
+| Fase | Item | Status | Branch / commits |
+|---|---|---|---|
+| 1 | Cadastro dos clientes (workspaces, tokens pela UI, destinos) | **OPERACIONAL — com o Heiv** | roteiro `docs/setup/dashboard-leads-import.md` |
+| 2 | Botão Qualificado na tela do lead → `QualifiedLead` (`manual_status`, rota atribuída ao anúncio) | **IMPLEMENTAÇÃO CONCLUÍDA — AGUARDANDO REVISÃO** | `feat/manual-lead-qualification`: `91453d3`, notas `a66e7cf`; migration `20261017090000_lead_manual_status` |
+| 3 | Formulários Meta: webhook `leadgen`, conexão por Página com tokens cifrados, etapa via Conversions API for CRM | **IMPLEMENTAÇÃO CONCLUÍDA — AGUARDANDO REVISÃO** | `feat/meta-lead-ads` (sobre a Fase 2): `a278294`, notas `e343473`; migration `20261017100000_meta_lead_forms` |
+| 4 | Script `dashboard-leads:import` (dry-run, idempotente; eventos já enviados viram `imported` com a chave do botão) | **IMPLEMENTAÇÃO CONCLUÍDA — AGUARDANDO REVISÃO** | `feat/import-dashboard-leads` (sobre a Fase 3): `98fb166`, notas `11f6a82` |
+| 5 | Virada dos webhooks, import delta, desligar o Dashboard Leads | **OPERACIONAL — com o Heiv** | roteiro `docs/setup/dashboard-leads-import.md` |
+
+Testes no Windows: API 152 arquivos verdes (inclusive `test:compiled-di` 15/15); WEB verde, exceto as 4 falhas só do Windows corrigidas pelo PR #87. Limitações:
+- lead CTWA sem anúncio (Unnichat) não é enviado pelo botão; isso exige um modo próprio no caminho página/pixel;
+- `notes` do Dashboard Leads não é importado;
+- PENDENTE: webhook `leadgen` real, envio Meta real (WhatsApp e CRM) e import contra o Supabase real.
+
 ### Decisão de ordenação — atualizada em 2026-10-14
 
 O modelo operacional continua: **uma instalação por aluno**, com banco/deploy/backoffice próprios.
