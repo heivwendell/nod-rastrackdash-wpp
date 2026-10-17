@@ -6,12 +6,16 @@ import {
 } from "@nestjs/common";
 import type {
   ConversionEventNameDto,
+  LeadManualMetaSendDto,
   LeadStatusDto,
   LeadStatusUpdateResultDto,
 } from "@wpptrack/shared";
 import { PrismaService } from "../common/prisma/prisma.service";
 import { ConversionEventsQueueService } from "../common/queue/conversion-events-queue.service";
-import { ConversionEventsService } from "../conversion-events/conversion-events.service";
+import {
+  ConversionEventsService,
+  META_LEAD_FORM_CRM_TRIGGER,
+} from "../conversion-events/conversion-events.service";
 
 /** Status the operator can set that also tells Meta about the lead. */
 const META_EVENT_BY_STATUS: Partial<
@@ -26,6 +30,23 @@ const STATUSES_BEFORE_QUALIFICATION: ReadonlySet<LeadStatusDto> = new Set([
   "active",
   "lost",
 ]);
+
+const NOT_APPLICABLE: LeadManualMetaSendDto = {
+  outcome: "not_applicable",
+  eventName: null,
+  conversionEventLogId: null,
+  errorCode: null,
+  errorMessage: null,
+};
+
+type StatusLead = {
+  id: string;
+  phoneHash: string;
+  campaignId: string | null;
+  adSetId: string | null;
+  adId: string | null;
+  ctwaClid: string | null;
+};
 
 export type UpdateLeadStatusInput = {
   workspaceId: string;
@@ -70,8 +91,12 @@ export class LeadStatusService {
         where: {
           workspaceId: input.workspaceId,
           leadId: lead.id,
-          eventName: { in: ["QualifiedLead", "Purchase"] },
           sourceTrigger: { not: "manual_test" },
+          OR: [
+            { eventName: { in: ["QualifiedLead", "Purchase"] } },
+            // The CRM stage has the connection's own event name.
+            { sourceTrigger: META_LEAD_FORM_CRM_TRIGGER },
+          ],
         },
         select: { id: true },
       });
@@ -96,15 +121,37 @@ export class LeadStatusService {
     if (!eventName) {
       return {
         status: input.status,
-        metaSend: {
-          outcome: "not_applicable",
-          eventName: null,
-          conversionEventLogId: null,
-          errorCode: null,
-        },
+        metaSend: NOT_APPLICABLE,
+        crmSend: null,
       };
     }
 
+    const submission = await this.prisma.metaLeadSubmission.findFirst({
+      where: {
+        workspaceId: input.workspaceId,
+        leadId: lead.id,
+        fetchStatus: "fetched",
+      },
+      orderBy: [{ metaCreatedAt: "desc" }, { createdAt: "desc" }],
+      select: { id: true },
+    });
+    // A form-only lead has no WhatsApp conversation: only the CRM event applies.
+    const metaSend =
+      lead.ctwaClid || !submission
+        ? await this.sendMessagingEvent(input, lead, eventName)
+        : NOT_APPLICABLE;
+    const crmSend = submission
+      ? await this.sendCrmEvent(input, lead, submission.id)
+      : null;
+
+    return { status: input.status, metaSend, crmSend };
+  }
+
+  private async sendMessagingEvent(
+    input: UpdateLeadStatusInput,
+    lead: StatusLead,
+    eventName: ConversionEventNameDto,
+  ): Promise<LeadManualMetaSendDto> {
     const recorded = await this.conversionEvents.recordManualStatusConversion({
       workspaceId: input.workspaceId,
       leadId: lead.id,
@@ -116,17 +163,53 @@ export class LeadStatusService {
       adId: lead.adId,
       ctwaClid: lead.ctwaClid,
     });
+
+    return this.dispatch(input.workspaceId, eventName, recorded, null);
+  }
+
+  private async sendCrmEvent(
+    input: UpdateLeadStatusInput,
+    lead: StatusLead,
+    submissionId: string,
+  ): Promise<LeadManualMetaSendDto> {
+    const recorded = await this.conversionEvents.recordLeadFormCrmConversion({
+      workspaceId: input.workspaceId,
+      leadId: lead.id,
+      phoneHash: lead.phoneHash,
+      submissionId,
+      actorUserId: input.actorUserId,
+    });
+    const logId = recorded.created[0] ?? recorded.duplicates[0] ?? null;
+    const log = logId
+      ? await this.prisma.conversionEventLog.findUnique({
+          where: { id: logId },
+          select: { eventName: true },
+        })
+      : null;
+
+    return this.dispatch(
+      input.workspaceId,
+      log?.eventName ?? null,
+      recorded,
+      recorded.errorMessage,
+    );
+  }
+
+  private async dispatch(
+    workspaceId: string,
+    eventName: string | null,
+    recorded: { created: string[]; duplicates: string[] },
+    errorMessage: string | null,
+  ): Promise<LeadManualMetaSendDto> {
     const logId = recorded.created[0] ?? recorded.duplicates[0] ?? null;
 
     if (recorded.created.length === 0) {
       return {
-        status: input.status,
-        metaSend: {
-          outcome: "already_recorded",
-          eventName,
-          conversionEventLogId: logId,
-          errorCode: null,
-        },
+        outcome: "already_recorded",
+        eventName,
+        conversionEventLogId: logId,
+        errorCode: null,
+        errorMessage: null,
       };
     }
 
@@ -143,26 +226,22 @@ export class LeadStatusService {
         : null;
 
       return {
-        status: input.status,
-        metaSend: {
-          outcome: "not_eligible",
-          eventName,
-          conversionEventLogId: logId,
-          errorCode: log?.errorCode ?? null,
-        },
+        outcome: "not_eligible",
+        eventName,
+        conversionEventLogId: logId,
+        errorCode: log?.errorCode ?? null,
+        errorMessage,
       };
     }
 
-    await this.conversionEventsQueue.enqueueSend(readyLogId, input.workspaceId);
+    await this.conversionEventsQueue.enqueueSend(readyLogId, workspaceId);
 
     return {
-      status: input.status,
-      metaSend: {
-        outcome: "queued",
-        eventName,
-        conversionEventLogId: readyLogId,
-        errorCode: null,
-      },
+      outcome: "queued",
+      eventName,
+      conversionEventLogId: readyLogId,
+      errorCode: null,
+      errorMessage: null,
     };
   }
 }

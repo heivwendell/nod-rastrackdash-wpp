@@ -15,7 +15,12 @@ type Lead = {
 
 function createHarness(
   lead: Partial<Lead> = {},
-  existingLogs: Array<{ leadId: string; eventName: string }> = [],
+  existingLogs: Array<{
+    leadId: string;
+    eventName: string;
+    sourceTrigger?: string;
+  }> = [],
+  submissions: Array<{ id: string; leadId: string }> = [],
 ) {
   const leads: Lead[] = [
     {
@@ -47,16 +52,30 @@ function createHarness(
         existingLogs.find(
           (log) =>
             log.leadId === where.leadId &&
-            where.eventName.in.includes(log.eventName),
+            (where.OR[0].eventName.in.includes(log.eventName) ||
+              log.sourceTrigger === where.OR[1].sourceTrigger),
         ) ?? null,
       ),
-      findUnique: vi.fn(async () => ({ errorCode: "MissingAdId" })),
+      findUnique: vi.fn(async () => ({
+        errorCode: "MissingAdId",
+        eventName: "LeadQualificado",
+      })),
+    },
+    metaLeadSubmission: {
+      findFirst: vi.fn(async ({ where }) =>
+        submissions.find((item) => item.leadId === where.leadId) ?? null,
+      ),
     },
   };
   const conversionEvents = {
     recordManualStatusConversion: vi.fn(async () => ({
       created: ["log_1"],
       duplicates: [] as string[],
+    })),
+    recordLeadFormCrmConversion: vi.fn(async () => ({
+      created: ["crm_log_1"],
+      duplicates: [] as string[],
+      errorMessage: null as string | null,
     })),
     listReadyLogIds: vi.fn(async (ids: string[]) => ids),
   };
@@ -144,6 +163,49 @@ describe("LeadStatusService", () => {
       h.service.updateStatus({ ...input, status: "lost" }),
     ).rejects.toBeInstanceOf(ConflictException);
     expect(h.prisma.lead.update).not.toHaveBeenCalled();
+  });
+
+  it("a form-only lead sends only the CRM stage of its latest submission", async () => {
+    const h = createHarness({ ctwaClid: null }, [], [
+      { id: "submission_1", leadId: "lead_1" },
+    ]);
+
+    const result = await h.service.updateStatus({ ...input, status: "qualified" });
+
+    expect(h.conversionEvents.recordManualStatusConversion).not.toHaveBeenCalled();
+    expect(h.conversionEvents.recordLeadFormCrmConversion).toHaveBeenCalledWith(
+      expect.objectContaining({ submissionId: "submission_1", leadId: "lead_1" }),
+    );
+    expect(h.queue.enqueueSend).toHaveBeenCalledWith("crm_log_1", "workspace_1");
+    expect(result.metaSend.outcome).toBe("not_applicable");
+    expect(result.crmSend).toMatchObject({
+      outcome: "queued",
+      eventName: "LeadQualificado",
+    });
+  });
+
+  it("a lead with form and WhatsApp sends both events", async () => {
+    const h = createHarness({}, [], [{ id: "submission_1", leadId: "lead_1" }]);
+
+    const result = await h.service.updateStatus({ ...input, status: "qualified" });
+
+    expect(h.queue.enqueueSend).toHaveBeenCalledTimes(2);
+    expect(result.metaSend.outcome).toBe("queued");
+    expect(result.crmSend?.outcome).toBe("queued");
+  });
+
+  it("a CRM qualification also locks the status", async () => {
+    const h = createHarness({}, [
+      {
+        leadId: "lead_1",
+        eventName: "LeadQualificado",
+        sourceTrigger: "meta_lead_form_crm",
+      },
+    ]);
+
+    await expect(
+      h.service.updateStatus({ ...input, status: "new" }),
+    ).rejects.toBeInstanceOf(ConflictException);
   });
 
   it("scopes the lead to the current workspace", async () => {

@@ -157,23 +157,31 @@ export const leadManualMetaSendOutcomes = [
   "not_applicable",
 ] as const;
 
+const leadManualMetaSendSchema = z.object({
+  outcome: z.enum(leadManualMetaSendOutcomes),
+  eventName: z.string().min(1).nullable(),
+  conversionEventLogId: z.string().min(1).nullable(),
+  errorCode: z.string().min(1).nullable(),
+  /** Portuguese reason when not_eligible (CRM path). */
+  errorMessage: z.string().min(1).nullable().default(null),
+});
+
 export const leadStatusUpdateResultSchema = z.object({
   status: z.enum(leadStatuses),
-  metaSend: z.object({
-    outcome: z.enum(leadManualMetaSendOutcomes),
-    eventName: z.string().min(1).nullable(),
-    conversionEventLogId: z.string().min(1).nullable(),
-    errorCode: z.string().min(1).nullable(),
-  }),
+  /** WhatsApp (business messaging) event, by ad and ctwa_clid. */
+  metaSend: leadManualMetaSendSchema,
+  /** CRM event of the lead's latest Meta instant-form submission, if any. */
+  crmSend: leadManualMetaSendSchema.nullable().default(null),
 });
 
 export type LeadStatusDto = z.infer<typeof leadListItemSchema>["status"];
 export type LeadStatusUpdateInputDto = z.infer<
   typeof leadStatusUpdateInputSchema
 >;
-export type LeadStatusUpdateResultDto = z.infer<
+export type LeadStatusUpdateResultDto = z.input<
   typeof leadStatusUpdateResultSchema
 >;
+export type LeadManualMetaSendDto = z.input<typeof leadManualMetaSendSchema>;
 export type LeadBaseDto = (typeof leadBases)[number];
 export type LeadListQueryDto = z.infer<typeof leadListQuerySchema>;
 export type LeadListItemDto = z.infer<typeof leadListItemSchema>;
