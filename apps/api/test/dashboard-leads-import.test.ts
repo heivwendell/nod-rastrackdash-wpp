@@ -6,11 +6,26 @@ import {
   supabaseRestSource,
   type DashboardLeadsLead,
 } from "../src/dashboard-leads-import/dashboard-leads-import";
-import { parseArgs } from "../src/scripts/import-dashboard-leads";
+import {
+  parseArgs,
+  resolveCreateWorkspaces,
+} from "../src/scripts/import-dashboard-leads";
 
 type Row = Record<string, any>;
 
-function createDb(options: { connection?: boolean; existingPhone?: string } = {}) {
+function createDb(
+  options: {
+    connection?: boolean;
+    existingPhone?: string;
+    workspaces?: Row[];
+  } = {},
+) {
+  const workspaces: Row[] = [
+    { id: "ws_l", slug: "ws-l", members: [] },
+    { id: "ws_v", slug: "ws-v", members: [] },
+    ...(options.workspaces ?? []),
+  ];
+  const audits: Row[] = [];
   const leads: Row[] = options.existingPhone
     ? [
         {
@@ -31,11 +46,39 @@ function createDb(options: { connection?: boolean; existingPhone?: string } = {}
         ? value.in.includes(row[key])
         : row[key] === value,
     );
-  const prisma = {
+  const prisma: Row = {
     workspace: {
-      findUnique: vi.fn(async ({ where }) =>
-        ["ws_l", "ws_v"].includes(where.id) ? { id: where.id } : null,
-      ),
+      findUnique: vi.fn(async ({ where, select }) => {
+        const row = workspaces.find((item) =>
+          where.id ? item.id === where.id : item.slug === where.slug,
+        );
+        if (!row) return null;
+        const owner = select?.members?.where;
+        return {
+          id: row.id,
+          members: row.members
+            .filter((m: Row) => owner && m.userId === owner.userId && m.role === owner.role)
+            .map((m: Row) => ({ id: m.id })),
+        };
+      }),
+      create: vi.fn(async ({ data }) => {
+        const row = { id: `ws_new_${data.slug}`, ...data, members: [] };
+        workspaces.push(row);
+        return { id: row.id, slug: row.slug };
+      }),
+    },
+    workspaceMember: {
+      create: vi.fn(async ({ data }) => {
+        const row = { id: `member_${data.workspaceId}`, ...data };
+        workspaces.find((item) => item.id === data.workspaceId)!.members.push(row);
+        return { id: row.id };
+      }),
+    },
+    auditLog: {
+      create: vi.fn(async ({ data }) => {
+        audits.push(data);
+        return {};
+      }),
     },
     lead: {
       findFirst: vi.fn(async ({ where }) => leads.find((row) => matches(row, where)) ?? null),
@@ -87,7 +130,9 @@ function createDb(options: { connection?: boolean; existingPhone?: string } = {}
     },
   };
 
-  return { prisma, leads, submissions, logs };
+  prisma.$transaction = vi.fn(async (fn: (tx: Row) => unknown) => fn(prisma));
+
+  return { prisma, leads, submissions, logs, workspaces, audits };
 }
 
 function lead(overrides: Partial<DashboardLeadsLead>): DashboardLeadsLead {
@@ -123,9 +168,10 @@ function lead(overrides: Partial<DashboardLeadsLead>): DashboardLeadsLead {
 function source(leads: DashboardLeadsLead[]) {
   return {
     listProjects: async () => [
-      { id: "p_l", slug: "locaville" },
-      { id: "p_v", slug: "venerata" },
-      { id: "p_c", slug: "consultatu" },
+      { id: "p_l", slug: "locaville", name: "Locaville", active: true },
+      { id: "p_v", slug: "venerata", name: "Venerata Imóveis", active: true },
+      { id: "p_c", slug: "consultatu", name: "Consultatu", active: true },
+      { id: "p_x", slug: "exemplo", name: "Projeto Exemplo", active: false },
     ],
     async *leadPages() {
       yield leads;
@@ -170,7 +216,8 @@ describe("runDashboardLeadsImport", () => {
       workspaceBySlug,
     });
 
-    expect(report.unmappedProjects).toEqual(["consultatu"]);
+    expect(report.unmappedProjects).toEqual(["consultatu", "exemplo"]);
+    expect(report.workspacesCreated).toEqual([]);
     expect(report.unroutedLeads).toBe(1);
     expect(report.projects.locaville).toMatchObject({
       leads: 1,
@@ -266,6 +313,156 @@ describe("runDashboardLeadsImport", () => {
   });
 });
 
+describe("runDashboardLeadsImport --create-workspaces", () => {
+  const createWorkspaces = { ownerUserId: "owner_1", actorUserId: "platform_1" };
+  const history = [
+    lead({ id: "dl_l", project_id: "p_l", source: "whatsapp", meta_lead_id: null, ctwa_clid: "c1" }),
+    lead({
+      id: "dl_v",
+      project_id: "p_v",
+      source: "whatsapp",
+      meta_lead_id: null,
+      ctwa_clid: "c2",
+      phone: "5547988887777",
+    }),
+  ];
+
+  it("creates one company per active project for the same owner", async () => {
+    const db = createDb();
+
+    const report = await runDashboardLeadsImport(db.prisma as never, source(history), {
+      apply: true,
+      workspaceBySlug: {},
+      createWorkspaces,
+    });
+
+    expect(report.workspacesCreated).toEqual(["locaville", "venerata", "consultatu"]);
+    expect(report.skippedInactiveProjects).toEqual(["exemplo"]);
+    const created = db.workspaces.filter((item) => item.id.startsWith("ws_new_"));
+    expect(created.map((item) => [item.slug, item.name])).toEqual([
+      ["locaville", "Locaville"],
+      ["venerata", "Venerata Imóveis"],
+      ["consultatu", "Consultatu"],
+    ]);
+    for (const workspace of created) {
+      expect(workspace.members).toEqual([
+        expect.objectContaining({ userId: "owner_1", role: "owner" }),
+      ]);
+    }
+    expect(db.audits).toHaveLength(6);
+    expect(db.audits[0]).toMatchObject({
+      actorUserId: "platform_1",
+      actorType: "platform_owner",
+      action: "backoffice.workspace_created",
+      afterSummary: { source: "dashboard_leads_import" },
+    });
+    expect(db.leads.map((row) => row.workspaceId).sort()).toEqual([
+      "ws_new_locaville",
+      "ws_new_venerata",
+    ]);
+  });
+
+  it("a second run reuses the companies", async () => {
+    const db = createDb();
+    const run = () =>
+      runDashboardLeadsImport(db.prisma as never, source(history), {
+        apply: true,
+        workspaceBySlug: {},
+        createWorkspaces,
+      });
+
+    await run();
+    const again = await run();
+
+    expect(again.workspacesCreated).toEqual([]);
+    expect(again.workspacesReused).toEqual(["locaville", "venerata", "consultatu"]);
+    expect(db.prisma.workspace.create).toHaveBeenCalledTimes(3);
+    expect(db.leads).toHaveLength(2);
+  });
+
+  it("dry-run lists the companies to create without writing", async () => {
+    const db = createDb();
+
+    const report = await runDashboardLeadsImport(db.prisma as never, source(history), {
+      apply: false,
+      workspaceBySlug: {},
+      createWorkspaces,
+    });
+
+    expect(report.workspacesCreated).toEqual(["locaville", "venerata", "consultatu"]);
+    expect(report.projects.locaville).toMatchObject({ leads: 1, peopleCreated: 1 });
+    expect(db.prisma.workspace.create).not.toHaveBeenCalled();
+    expect(db.prisma.lead.upsert).not.toHaveBeenCalled();
+  });
+
+  it("refuses a slug owned by someone else", async () => {
+    const db = createDb({
+      workspaces: [
+        { id: "ws_other", slug: "venerata", members: [{ id: "m", userId: "other", role: "owner" }] },
+      ],
+    });
+
+    await expect(
+      runDashboardLeadsImport(db.prisma as never, source(history), {
+        apply: false,
+        workspaceBySlug: {},
+        createWorkspaces,
+      }),
+    ).rejects.toThrow(/--map venerata=/);
+  });
+
+  it("--map wins over creation", async () => {
+    const db = createDb();
+
+    const report = await runDashboardLeadsImport(db.prisma as never, source(history), {
+      apply: true,
+      workspaceBySlug: { locaville: "ws_l" },
+      createWorkspaces,
+    });
+
+    expect(report.workspacesCreated).toEqual(["venerata", "consultatu"]);
+    expect(db.leads.find((row) => row.ctwaClid === "c1")?.workspaceId).toBe("ws_l");
+  });
+});
+
+describe("resolveCreateWorkspaces", () => {
+  const users = (rows: Row[]) => ({
+    user: {
+      findFirst: vi.fn(async ({ where }) =>
+        rows.find(
+          (row) =>
+            row.email === where.email.equals &&
+            (!where.platformRole || row.platformRole === where.platformRole),
+        ) ?? null,
+      ),
+    },
+  });
+  const client = { id: "owner_1", email: "cli@x.com", passwordHash: "h", platformRole: null };
+  const platform = { id: "platform_1", email: "adm@x.com", passwordHash: "h", platformRole: "platform_owner" };
+
+  it("accepts an activated client login and a platform owner", async () => {
+    await expect(
+      resolveCreateWorkspaces(users([client, platform]) as never, "cli@x.com", "adm@x.com"),
+    ).resolves.toEqual({ ownerUserId: "owner_1", actorUserId: "platform_1" });
+  });
+
+  it("refuses a platform login, a pending activation or a non-platform actor", async () => {
+    await expect(
+      resolveCreateWorkspaces(users([platform]) as never, "adm@x.com", "adm@x.com"),
+    ).rejects.toThrow(/administrador da plataforma/);
+    await expect(
+      resolveCreateWorkspaces(
+        users([{ ...client, passwordHash: null }, platform]) as never,
+        "cli@x.com",
+        "adm@x.com",
+      ),
+    ).rejects.toThrow(/ativado/);
+    await expect(
+      resolveCreateWorkspaces(users([client]) as never, "cli@x.com", "cli@x.com"),
+    ).rejects.toThrow(/Platform Owner/);
+  });
+});
+
 describe("nextStatus", () => {
   it("only moves forward and never discards a qualification", () => {
     expect(nextStatus("active", "qualified")).toBe("qualified");
@@ -296,11 +493,36 @@ describe("supabaseRestSource", () => {
 });
 
 describe("parseArgs", () => {
-  it("needs at least one mapping and is dry-run by default", () => {
+  it("needs a mapping or --create-workspaces and is dry-run by default", () => {
     expect(parseArgs(["--map", "locaville=ws_l"])).toEqual({
       apply: false,
       workspaceBySlug: { locaville: "ws_l" },
+      createWorkspaces: false,
+      ownerEmail: undefined,
+      actorEmail: undefined,
     });
     expect(() => parseArgs(["--apply"])).toThrow(/--map/);
+  });
+
+  it("--create-workspaces needs both e-mails", () => {
+    expect(
+      parseArgs([
+        "--create-workspaces",
+        "--owner-email",
+        "cli@x.com",
+        "--actor-email",
+        "adm@x.com",
+        "--apply",
+      ]),
+    ).toMatchObject({
+      apply: true,
+      createWorkspaces: true,
+      ownerEmail: "cli@x.com",
+      actorEmail: "adm@x.com",
+      workspaceBySlug: {},
+    });
+    expect(() =>
+      parseArgs(["--create-workspaces", "--owner-email", "cli@x.com"]),
+    ).toThrow(/--actor-email/);
   });
 });

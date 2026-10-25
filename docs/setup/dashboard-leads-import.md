@@ -7,9 +7,18 @@ landing page (fonte `web`) não é importada.
 
 ## 1. Configurar cada cliente
 
-Um workspace por projeto do Dashboard Leads. Os tokens são cadastrados pela
-interface, que os guarda cifrados. **Nunca copie o `.env.local` do Dashboard
-Leads para o repositório.**
+No Dashboard Leads, as empresas eram abas de um mesmo login. Aqui cada empresa
+é um workspace, e um mesmo login pode ter várias. Quando o login tem mais de
+uma, o quadro **Workspace** do menu lateral vira o seletor **Selecionar
+empresa**, e cada tela mostra só a empresa escolhida, sem misturar números.
+
+O import (passo 2) pode criar essas empresas sozinho com `--create-workspaces`:
+uma por projeto **ativo** do Dashboard Leads, todas do mesmo login de cliente.
+Não é preciso criar uma por uma no backoffice.
+
+Os tokens são cadastrados pela interface, em cada empresa, que os guarda
+cifrados. **Nunca copie o `.env.local` do Dashboard Leads para o
+repositório.**
 
 | No Dashboard Leads | No RastrackDash |
 | --- | --- |
@@ -23,23 +32,37 @@ Dashboard Leads.
 
 ## 2. Importar o histórico
 
-Rode **depois** de criar as conexões de formulário. Sem conexão para a Página,
-o lead entra, mas o envio de formulário e o evento já enviado não entram.
+Sem conexão de formulário para a Página, o lead entra, mas os dados do
+formulário e o evento de CRM já enviado não entram. Depois de criar a conexão,
+rode o import de novo: ele completa o que faltou sem duplicar.
 
 ```bash
 pnpm --filter @wpptrack/api build
 SUPABASE_URL=https://<projeto>.supabase.co \
 SUPABASE_SERVICE_ROLE_KEY=<chave de serviço> \
 pnpm --filter @wpptrack/api dashboard-leads:import -- \
-  --map locaville=<workspaceId> --map venerata=<workspaceId>
+  --create-workspaces \
+  --owner-email <login de cliente> \
+  --actor-email <login de plataforma>
 ```
 
-- **Dry-run por padrão.** O relatório mostra, por projeto, quantos leads entram,
-  quantas pessoas são criadas ou unidas a um lead existente, quantos envios de
-  formulário, quantos eventos já enviados e o que fica de fora. Confira as
-  contagens com o Supabase e rode de novo com `--apply`.
-- O `slug` é o de `projects.slug` no Dashboard Leads. Projetos sem `--map`
-  aparecem em `unmappedProjects` e não são importados.
+- **Dry-run por padrão.** O relatório mostra as empresas que seriam criadas
+  (`workspacesCreated`) ou reaproveitadas (`workspacesReused`) e, por projeto,
+  quantos leads entram, quantas pessoas são criadas ou unidas a um lead
+  existente, quantos envios de formulário, quantos eventos já enviados e o que
+  fica de fora. Confira as contagens com o Supabase e rode de novo com
+  `--apply`.
+- `--owner-email` é o login de **cliente** já ativado que vai ver as empresas.
+  Um login de plataforma não pode ser responsável de cliente (mesma regra da
+  tela do backoffice). `--actor-email` é o login de **plataforma** registrado na
+  auditoria.
+- Cada empresa nova recebe o nome e o `slug` do projeto no Dashboard Leads.
+  Numa nova execução, a empresa com o mesmo `slug` desse dono é reaproveitada.
+  Se o `slug` já pertence a outro dono, o script para e pede um `--map`.
+- Projetos inativos ficam de fora (`skippedInactiveProjects`).
+- `--map slug=<workspaceId>` manda um projeto para um workspace que já existe e
+  tem prioridade sobre a criação. Sem `--create-workspaces`, todo projeto
+  precisa de um `--map`; os que não têm aparecem em `unmappedProjects`.
 - Passe as credenciais do Supabase **só na linha de comando**.
 - O script pode rodar quantas vezes for preciso: pessoas por telefone (com as
   variantes do nono dígito), envios de formulário pelo ID da Meta e eventos pela

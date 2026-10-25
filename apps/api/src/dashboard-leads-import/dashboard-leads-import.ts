@@ -21,7 +21,12 @@ import { LeadsService } from "../leads/leads.service";
 export const DASHBOARD_LEADS_SOURCE = "dashboard_leads";
 export const DASHBOARD_LEADS_IMPORT_TRIGGER = "dashboard_leads_import";
 
-export type DashboardLeadsProject = { id: string; slug: string };
+export type DashboardLeadsProject = {
+  id: string;
+  slug: string;
+  name: string;
+  active: boolean;
+};
 
 export type DashboardLeadsLead = {
   id: string;
@@ -72,6 +77,11 @@ type ProjectReport = {
 export type DashboardLeadsImportReport = {
   apply: boolean;
   unmappedProjects: string[];
+  skippedInactiveProjects: string[];
+  /** Companies (workspaces) created for the owner; in a dry-run, to create. */
+  workspacesCreated: string[];
+  /** Companies the owner already had with the same slug. */
+  workspacesReused: string[];
   unroutedLeads: number;
   projects: Record<string, ProjectReport>;
 };
@@ -107,6 +117,98 @@ function emptyReport(): ProjectReport {
   };
 }
 
+/**
+ * One company per Dashboard Leads project, all owned by the same client login,
+ * so the "Selecionar empresa" switcher lists them like the old tabs. Same
+ * records as the backoffice screen: workspace, owner membership and the two
+ * audit entries.
+ */
+async function resolveCompanyWorkspace(
+  prisma: PrismaClient,
+  project: DashboardLeadsProject,
+  create: CreateWorkspacesOption,
+  apply: boolean,
+  report: DashboardLeadsImportReport,
+): Promise<string> {
+  const existing = await prisma.workspace.findUnique({
+    where: { slug: project.slug },
+    select: {
+      id: true,
+      members: {
+        where: { userId: create.ownerUserId, role: "owner" },
+        select: { id: true },
+      },
+    },
+  });
+
+  if (existing) {
+    if (existing.members.length === 0) {
+      throw new Error(
+        `Ja existe um workspace "${project.slug}" de outro dono. Use --map ${project.slug}=<workspaceId>.`,
+      );
+    }
+    report.workspacesReused.push(project.slug);
+    return existing.id;
+  }
+
+  report.workspacesCreated.push(project.slug);
+  if (!apply) {
+    // Dry-run: a placeholder no row will match.
+    return `(nova:${project.slug})`;
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const workspace = await tx.workspace.create({
+      data: { name: project.name, slug: project.slug },
+      select: { id: true, slug: true },
+    });
+    const member = await tx.workspaceMember.create({
+      data: {
+        workspaceId: workspace.id,
+        userId: create.ownerUserId,
+        role: "owner",
+      },
+      select: { id: true },
+    });
+    const actor = { actorUserId: create.actorUserId, actorType: "platform_owner" };
+    await tx.auditLog.create({
+      data: {
+        workspaceId: workspace.id,
+        ...actor,
+        action: "backoffice.workspace_created",
+        targetType: "Workspace",
+        targetId: workspace.id,
+        resultStatus: "success",
+        afterSummary: {
+          slug: workspace.slug,
+          responsibleUserId: create.ownerUserId,
+          responsibleRole: "owner",
+          source: DASHBOARD_LEADS_IMPORT_TRIGGER,
+        },
+      },
+    });
+    await tx.auditLog.create({
+      data: {
+        workspaceId: workspace.id,
+        ...actor,
+        action: "backoffice.workspace_responsible_reused",
+        targetType: "WorkspaceMember",
+        targetId: member.id,
+        resultStatus: "success",
+        afterSummary: {
+          userId: create.ownerUserId,
+          role: "owner",
+          reusedExistingUser: true,
+          activationRequired: false,
+          source: DASHBOARD_LEADS_IMPORT_TRIGGER,
+        },
+      },
+    });
+
+    return workspace.id;
+  });
+}
+
 /** Only moves forward; lost never overrides a qualification. */
 export function nextStatus(
   current: RastrackStatus,
@@ -117,33 +219,61 @@ export function nextStatus(
   return STATUS_RANK[imported] > STATUS_RANK[current] ? imported : null;
 }
 
+export type CreateWorkspacesOption = {
+  /** Client login that owns every created company (never a platform user). */
+  ownerUserId: string;
+  /** Platform owner recorded in the audit, as on the backoffice screen. */
+  actorUserId: string;
+};
+
 export async function runDashboardLeadsImport(
   prisma: PrismaClient,
   source: DashboardLeadsSource,
-  options: { apply: boolean; workspaceBySlug: Record<string, string> },
+  options: {
+    apply: boolean;
+    workspaceBySlug: Record<string, string>;
+    createWorkspaces?: CreateWorkspacesOption;
+  },
 ): Promise<DashboardLeadsImportReport> {
   const projects = await source.listProjects();
   const workspaceByProject = new Map<string, { slug: string; workspaceId: string }>();
   const report: DashboardLeadsImportReport = {
     apply: options.apply,
     unmappedProjects: [],
+    skippedInactiveProjects: [],
+    workspacesCreated: [],
+    workspacesReused: [],
     unroutedLeads: 0,
     projects: {},
   };
 
   for (const project of projects) {
-    const workspaceId = options.workspaceBySlug[project.slug];
-    if (!workspaceId) {
+    let workspaceId: string | undefined = options.workspaceBySlug[project.slug];
+
+    if (workspaceId) {
+      const workspace = await prisma.workspace.findUnique({
+        where: { id: workspaceId },
+        select: { id: true },
+      });
+      if (!workspace) {
+        throw new Error(`Workspace ${workspaceId} (${project.slug}) nao existe.`);
+      }
+    } else if (!options.createWorkspaces) {
       report.unmappedProjects.push(project.slug);
       continue;
+    } else if (!project.active) {
+      report.skippedInactiveProjects.push(project.slug);
+      continue;
+    } else {
+      workspaceId = await resolveCompanyWorkspace(
+        prisma,
+        project,
+        options.createWorkspaces,
+        options.apply,
+        report,
+      );
     }
-    const workspace = await prisma.workspace.findUnique({
-      where: { id: workspaceId },
-      select: { id: true },
-    });
-    if (!workspace) {
-      throw new Error(`Workspace ${workspaceId} (${project.slug}) nao existe.`);
-    }
+
     workspaceByProject.set(project.id, { slug: project.slug, workspaceId });
     report.projects[project.slug] = emptyReport();
   }
@@ -368,7 +498,8 @@ export function supabaseRestSource(
   };
 
   return {
-    listProjects: () => get<DashboardLeadsProject[]>("projects?select=id,slug"),
+    listProjects: () =>
+      get<DashboardLeadsProject[]>("projects?select=id,slug,name,active"),
     async *leadPages() {
       for (let offset = 0; ; offset += pageSize) {
         const page = await get<DashboardLeadsLead[]>(
